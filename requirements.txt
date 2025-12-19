@@ -1,0 +1,5 @@
+fastapi==0.115.6
+uvicorn==0.32.1
+azure-cosmos==4.5.1
+azure-identity==1.15.0
+gunicorn==21.2.0

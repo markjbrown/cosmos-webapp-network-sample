@@ -1,0 +1,30 @@
+# Development files
+.env
+.venv
+env/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Azure
+.azure/
+
+# Except for the .env template
+!.azure/*/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local build outputs
+_dist/

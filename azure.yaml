@@ -1,0 +1,175 @@
+name: cosmos-private-endpoint-webapp
+metadata:
+  template: cosmos-private-endpoint-webapp@0.0.1
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+  deploymentScope: subscription
+  location: ${AZURE_LOCATION}
+  parameters:
+    environmentName: ${AZURE_ENV_NAME}
+    location: ${AZURE_LOCATION}
+    owner: ${OWNER_EMAIL}
+    cosmosNetworkMode: ${COSMOS_NETWORK_MODE}
+
+hooks:
+    preprovision:
+      posix:
+        shell: sh
+        interactive: true
+        continueOnError: false
+        run: |
+          # Ensure AZURE_LOCATION is set (required for subscription-scope deployments)
+          if [ -z "$AZURE_LOCATION" ]; then
+            default_location="westcentralus"
+            azd env set AZURE_LOCATION "$default_location"
+            export AZURE_LOCATION="$default_location"
+          fi
+
+          # Set OWNER_EMAIL from the signed-in Azure CLI identity
+          CURRENT_USER=$(az account show --query user.name -o tsv 2>/dev/null)
+          if [ -z "$CURRENT_USER" ]; then
+            echo "ERROR: Unable to determine signed-in user via 'az account show'. Run 'az login' and retry." 1>&2
+            exit 1
+          fi
+          echo "Setting OWNER_EMAIL to: $CURRENT_USER"
+          azd env set OWNER_EMAIL "$CURRENT_USER" >/dev/null
+          export OWNER_EMAIL="$CURRENT_USER"
+
+          # Default Cosmos connectivity mode
+          # IMPORTANT: don't accidentally override a value the user already set via `azd env set`.
+          # In some contexts, hook shells may not have the azd env vars exported, so we read from azd env store.
+          mode_line=$(azd env get-values 2>/dev/null | grep '^COSMOS_NETWORK_MODE=' || true)
+          mode_value=""
+          if [ -n "$mode_line" ]; then
+            mode_value="${mode_line#COSMOS_NETWORK_MODE=}"
+            # Strip surrounding quotes if present
+            mode_value=${mode_value%\"}
+            mode_value=${mode_value#\"}
+          fi
+
+          if [ -z "$mode_value" ]; then
+            default_mode="privateEndpoint"
+
+            # Prompt only when running interactively; otherwise fall back to default.
+            if [ -t 0 ]; then
+              echo "Choose COSMOS_NETWORK_MODE:" 1>&2
+              echo "  1) privateEndpoint (default)" 1>&2
+              echo "  2) vnetRules" 1>&2
+              printf "Enter 1 or 2 [1]: " 1>&2
+              read -r choice
+              case "${choice:-1}" in
+                1|privateEndpoint)
+                  COSMOS_NETWORK_MODE="privateEndpoint"
+                  ;;
+                2|vnetRules)
+                  COSMOS_NETWORK_MODE="vnetRules"
+                  ;;
+                *)
+                  echo "Invalid choice '${choice}'. Using default: privateEndpoint" 1>&2
+                  COSMOS_NETWORK_MODE="privateEndpoint"
+                  ;;
+              esac
+            else
+              COSMOS_NETWORK_MODE="$default_mode"
+            fi
+
+            azd env set COSMOS_NETWORK_MODE "$COSMOS_NETWORK_MODE" >/dev/null
+            export COSMOS_NETWORK_MODE="$COSMOS_NETWORK_MODE"
+          else
+            COSMOS_NETWORK_MODE="$mode_value"
+            export COSMOS_NETWORK_MODE
+          fi
+
+          # Validate allowed values
+          if [ "$COSMOS_NETWORK_MODE" != "privateEndpoint" ] && [ "$COSMOS_NETWORK_MODE" != "vnetRules" ]; then
+            echo "ERROR: COSMOS_NETWORK_MODE must be 'privateEndpoint' or 'vnetRules' (got '$COSMOS_NETWORK_MODE')." 1>&2
+            exit 1
+          fi
+
+          echo "Using COSMOS_NETWORK_MODE=$COSMOS_NETWORK_MODE"
+      windows:
+        shell: pwsh
+        interactive: true
+        continueOnError: false
+        run: |
+          # Ensure AZURE_LOCATION is set (required for subscription-scope deployments)
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_LOCATION)) {
+            $defaultLocation = 'westcentralus'
+            azd env set AZURE_LOCATION $defaultLocation | Out-Null
+            $env:AZURE_LOCATION = $defaultLocation
+          }
+
+          # Set OWNER_EMAIL from the signed-in Azure CLI identity
+          $currentUser = (az account show --query user.name -o tsv 2>$null)
+          if ([string]::IsNullOrWhiteSpace($currentUser)) {
+            Write-Error "Unable to determine signed-in user via 'az account show'. Run 'az login' and retry."
+            exit 1
+          }
+          Write-Host "Setting OWNER_EMAIL to: $currentUser"
+          azd env set OWNER_EMAIL "$currentUser" | Out-Null
+          $env:OWNER_EMAIL = $currentUser
+
+          # Default Cosmos connectivity mode
+          # IMPORTANT: don't accidentally override a value the user already set via `azd env set`.
+          # In some contexts, hook shells may not have the azd env vars exported, so we read from azd env store.
+          $modeLine = azd env get-values 2>$null | Select-String -Pattern '^COSMOS_NETWORK_MODE=' | Select-Object -First 1
+          $mode = $null
+          if ($modeLine) {
+            $mode = $modeLine.Line.Split('=',2)[1].Trim().Trim('"')
+          }
+
+          if ([string]::IsNullOrWhiteSpace($mode)) {
+            $defaultMode = 'privateEndpoint'
+
+            if (-not [Console]::IsInputRedirected) {
+              Write-Host "Choose COSMOS_NETWORK_MODE:" -ForegroundColor Cyan
+              Write-Host "  1) privateEndpoint (default)"
+              Write-Host "  2) vnetRules"
+              $choice = (Read-Host "Enter 1 or 2 [1]")
+              if ([string]::IsNullOrWhiteSpace($choice)) { $choice = '1' }
+
+              switch ($choice.Trim()) {
+                '1' { $env:COSMOS_NETWORK_MODE = 'privateEndpoint' }
+                'privateEndpoint' { $env:COSMOS_NETWORK_MODE = 'privateEndpoint' }
+                '2' { $env:COSMOS_NETWORK_MODE = 'vnetRules' }
+                'vnetRules' { $env:COSMOS_NETWORK_MODE = 'vnetRules' }
+                default {
+                  Write-Warning "Invalid choice '$choice'. Using default: privateEndpoint"
+                  $env:COSMOS_NETWORK_MODE = 'privateEndpoint'
+                }
+              }
+            } else {
+              $env:COSMOS_NETWORK_MODE = $defaultMode
+            }
+
+            azd env set COSMOS_NETWORK_MODE $env:COSMOS_NETWORK_MODE | Out-Null
+          } else {
+            $env:COSMOS_NETWORK_MODE = $mode
+          }
+
+          if ($env:COSMOS_NETWORK_MODE -ne 'privateEndpoint' -and $env:COSMOS_NETWORK_MODE -ne 'vnetRules') {
+            Write-Error "COSMOS_NETWORK_MODE must be 'privateEndpoint' or 'vnetRules' (got '$($env:COSMOS_NETWORK_MODE)')."
+            exit 1
+          }
+
+          Write-Host "Using COSMOS_NETWORK_MODE=$($env:COSMOS_NETWORK_MODE)"
+    postprovision:
+      windows:
+        shell: pwsh
+        run: |
+          Write-Host "Web App URL  - ${AZURE_OUTPUT_webAppUrl}" -ForegroundColor Green
+          Write-Host "API Docs URL - ${AZURE_OUTPUT_webAppUrl}/docs" -ForegroundColor Green
+      posix:
+        shell: sh
+        run: |
+          echo "Web App URL  - ${AZURE_OUTPUT_webAppUrl}"
+          echo "API Docs URL - ${AZURE_OUTPUT_webAppUrl}/docs"
+
+services:
+  api:
+    project: .
+    language: py
+    host: appservice
