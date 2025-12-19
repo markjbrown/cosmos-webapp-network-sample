@@ -113,6 +113,9 @@ Test the endpoints (recommended): open the Swagger UI and use **Try it out**.
 - Insert: `POST /api/insertData`
 - Query: `GET /api/queryData`
 
+![Swagger UI example](media/swagger_ui.png)
+
+
 Tip: App Service Python deployments can be slow because they often do a remote build (`pip install`) on every deploy.
 If you want faster/more deterministic deploys later, you can build a zip package locally (includes dependencies) and deploy that:
 
