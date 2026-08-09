@@ -1,109 +1,74 @@
-# Enable Cosmos DB Fabric Mirroring over Private Link (VNet Data Gateway)
+# Enable Cosmos DB Fabric Mirroring over Private Link (VNet Data Gateway) — Portal guide
 
-This guide shows how to mirror an **Azure Cosmos DB for NoSQL** account into
-**Microsoft Fabric** when the account has **public network access disabled** and is
-reachable only over a **Private Endpoint / VNet**, **without** maintaining the large
+This is a **portal-based** walkthrough for mirroring an **Azure Cosmos DB for NoSQL**
+account into **Microsoft Fabric** when the account has **public network access disabled**
+and is reachable only over a **Private Endpoint / VNet** — **without** maintaining the large
 DataFactory / PowerQueryOnline IP allowlists.
 
-It uses a **Fabric Virtual Network Data Gateway** that lives *inside your VNet* and
-reaches Cosmos privately, plus a trusted-workspace **network ACL bypass**. This is a
-newer, lower-maintenance alternative to the IP-allowlist flow in the
-[official Learn guide](https://learn.microsoft.com/fabric/mirroring/azure-cosmos-db-private-network).
+It uses a **Fabric Virtual Network Data Gateway** that runs *inside your VNet* and reaches
+Cosmos privately, plus a trusted-workspace **network ACL bypass**.
 
-> **How much can be automated?** Everything except one step. The Cosmos + network
-> resources, RBAC, the network ACL bypass, the delegated subnet, the gateway, and the
-> mirror itself can all be provisioned with Bicep + PowerShell/REST. The **only** manual
-> step is creating the **Azure Cosmos DB v2 connection**, which requires an interactive
-> **OAuth 2.0** sign-in in the Fabric portal and cannot be scripted.
+> ### ⚠️ Three settings have no portal UI (platform limitation)
+> Almost every step here is done by clicking in the **Azure portal** and the **Fabric
+> portal**. However, **three Cosmos-account settings currently have no portal UI at all**:
+> the **`EnableFabricNetworkAclBypass`** capability, the **trusted-workspace authorization**,
+> and the Cosmos **data-plane RBAC**. There is no blade or toggle for them — even Azure's own
+> **"Mirroring in Fabric"** wizard hands you a script for these.
+>
+> To keep everything *inside the portal* (no local terminal, no `.ps1`/`.sh` files), run those
+> three settings' commands in **Azure Cloud Shell** — the **`>_`** icon in the Azure portal
+> top bar. They are collected together in **Step 3**.
 
-## Two approaches, and why this one
+## Why this approach
 
 | | IP-allowlist approach ([Learn doc](https://learn.microsoft.com/fabric/mirroring/azure-cosmos-db-private-network)) | **VNet Data Gateway approach (this guide)** |
 |---|---|---|
-| How Fabric reaches Cosmos | Temporarily open **Selected networks** + add ~400–1200 DataFactory/PowerQueryOnline IPs (or NSP service tags) | A **VNet Data Gateway** in a delegated subnet reaches Cosmos over the private network |
+| How Fabric reaches Cosmos | Temporarily open **Selected networks** + add ~400–1200 DataFactory/PowerQueryOnline IPs | A **VNet Data Gateway** in a delegated subnet reaches Cosmos over the private network |
 | Ongoing firewall maintenance | Yes — service IP ranges change over time | **None** |
-| Public access during setup | Briefly re-enabled (Selected networks) | Can stay **Disabled** the whole time |
-| Mirror creation | Fabric UX | Fabric UX **or** REST API |
-
-Both approaches still use the same trust primitive: **`EnableFabricNetworkAclBypass`**
-plus authorizing your Fabric **workspace ID** as a trusted resource.
-
-## Architecture
-
-| Component | Configuration |
-|---|---|
-| Cosmos networking | `publicNetworkAccess = Disabled` |
-| Private connectivity | Private Endpoint + Private DNS (`privatelink.documents.azure.com`) |
-| Trust | `EnableFabricNetworkAclBypass` capability + `networkAclBypass = AzureServices` authorizing the Fabric workspace resource id |
-| RBAC | Fabric workspace identity gets **Built-in Data Contributor** + a custom **metadata/analytics reader** role |
-| Gateway subnet | Dedicated empty subnet delegated to `Microsoft.PowerPlatform/vnetaccesslinks` |
-| Fabric connection | **Azure Cosmos DB v2**, connectivity = **Virtual Network**, auth = **OAuth 2.0** |
-| Mirror | Started via Fabric REST API (or UX) |
+| Public access during setup | Briefly re-enabled | Stays **Disabled** the whole time |
 
 ## Prerequisites
 
-- An Azure Cosmos DB for NoSQL account configured for mirroring: **continuous backup**
-  (7 or 30 day), **Entra ID auth**, local auth disabled.
-- The Cosmos account and Fabric workspace in the **same Azure region**.
-- An existing **Fabric workspace** (use a *shared* workspace, not *My workspace*) on a
-  **Fabric capacity**.
-- You are an **Admin** on the Fabric workspace and have **Contributor + RBAC-assignment**
-  rights on the Cosmos account/subscription.
-- Az PowerShell (`Az.Accounts`, `Az.CosmosDB`, `Az.Resources`, `Az.Network`) for the
-  scripts.
+- An Azure Cosmos DB for NoSQL account with **continuous backup** (7 or 30 day), **Entra ID
+  auth**, local auth disabled, and **public network access = Disabled** behind a **private
+  endpoint**.
+- A **Fabric workspace** (use a *shared* workspace, not *My workspace*) on a **Fabric
+  capacity**, in the **same Azure region** as the Cosmos account.
+- You are an **Azure subscription owner** (required to configure the trusted workspace) and a
+  **Fabric workspace Admin**.
+- Your VNet does **not** yet have a gateway subnet — you'll create it in Step 2.
+
+Get your **Fabric workspace ID** now: open the workspace in the Fabric portal and copy the
+GUID from the URL — `.../groups/{workspace-id}/...`. You'll need it in Steps 3 and 4.
 
 ---
 
-## Step-by-step
+# Part 1 — Azure portal: prepare the Cosmos account and network
 
-### Step 0 — Provision Cosmos + VNet (Bicep)
+## Step 1 — Register the Microsoft.PowerPlatform resource provider
 
-If you use this repo's harness, `azd up` provisions the private-network Cosmos + VNet.
-To also provision the mirroring trust + gateway subnet declaratively, set the Fabric
-workspace values before deploying:
+1. In the Azure portal, open your **Subscription**.
+2. Under **Settings**, select **Resource providers**.
+3. Search for **`Microsoft.PowerPlatform`**, select it, and choose **Register** (skip if it
+   already shows **Registered**).
 
-```bash
-azd env set COSMOS_NETWORK_MODE privateEndpoint
-azd env set FABRIC_WORKSPACE_ID   <fabric-workspace-guid>
-azd env set FABRIC_TENANT_ID      <fabric-tenant-guid>          # optional; defaults to sub tenant
-# optional: grant the custom mirroring RBAC role to the workspace identity at deploy time
-azd env set FABRIC_WORKSPACE_PRINCIPAL_ID <workspace-identity-object-id>
-azd up
-```
+![Resource providers — Microsoft.PowerPlatform Registered](media/private-link-mirroring/07-register-powerplatform-rp.png)
 
-When `FABRIC_WORKSPACE_ID` is set, `infra/resources.bicep` adds, in one deployment:
-
-- the `EnableFabricNetworkAclBypass` capability,
-- `networkAclBypass = AzureServices` + the trusted workspace resource id,
-- a custom **Fabric Mirroring Metadata Reader** role (and, if a principal id is given,
-  assigns it plus **Built-in Data Contributor** to the workspace identity),
-- the delegated `snet-fabric` subnet (`Microsoft.PowerPlatform/vnetaccesslinks`, min `/27`).
-  This subnet is only added when `FABRIC_WORKSPACE_ID` is set — a plain private-link
-  deployment does not include it.
-
-> Prefer to keep Bicep untouched? Skip the Fabric params and run the PowerShell script in
-> Step 1 instead — it applies the same Cosmos-side configuration idempotently. In that case
-> you must create the delegated gateway subnet yourself first — see the next section.
-
-### Step 0b — Create the delegated gateway subnet (manual)
+## Step 2 — Create the delegated gateway subnet
 
 A standard private-link Cosmos deployment has only your **web app** and **private endpoint**
-subnets — it does **not** include a gateway subnet. The Fabric VNet Data Gateway needs its
-own dedicated, delegated subnet, so add one to the VNet that hosts (or peers with) the
-Cosmos private endpoint.
+subnets — it does **not** include a gateway subnet. The Fabric VNet Data Gateway needs its own
+dedicated, delegated subnet.
 
-**In the Azure portal:**
-
-Your Cosmos DB account is reachable through an approved **private endpoint** — this is the
-starting point (public network access is *Disabled*):
+Your account is reachable through an approved **private endpoint** (public access is
+*Disabled*) — that's the starting point:
 
 ![Cosmos DB Networking — public network access Disabled](media/private-link-mirroring/01-cosmos-networking-public-access-disabled.png)
 
 ![Cosmos DB Networking — Private access shows the approved private endpoint](media/private-link-mirroring/02-cosmos-networking-private-endpoint.png)
 
-1. Open the **Cosmos DB account → Networking** (you're likely already here). On the
-   **Private access** tab, click the private endpoint, then open its **Virtual network** to
-   jump to the VNet. (Or go straight to **Virtual networks → your VNet**.)
+1. From the Cosmos account **Networking → Private access**, open the private endpoint, then
+   its **Virtual network** (or go directly to **Virtual networks → your VNet**).
 2. Select **Subnets → + Subnet**.
 
    ![VNet Subnets — the + Subnet button](media/private-link-mirroring/03-vnet-subnets-add.png)
@@ -113,10 +78,8 @@ starting point (public network access is *Disabled*):
    | Setting | Value | Notes |
    |---|---|---|
    | **Name** | `snet-fabric` | Any name; dedicated to the gateway |
-   | **Address range** | e.g. `10.x.y.0/27` | **Minimum `/27` (32 IPs)** — smaller is rejected. Must not overlap other subnets |
+   | **Size / address range** | `/27` (32 IPs) | **Minimum `/27`** — smaller is rejected. Must not overlap other subnets |
    | **Subnet delegation** | `Microsoft.PowerPlatform/vnetaccesslinks` | Required — this is what makes it a gateway subnet |
-   | **Network security group** | None (or your own) | Optional |
-   | **Route table** | None (or your own) | Optional |
    | **Private endpoint network policies** | Disabled | Recommended |
 
    ![Add a subnet — name and /27 size](media/private-link-mirroring/04-add-subnet-size-27.png)
@@ -126,128 +89,144 @@ starting point (public network access is *Disabled*):
 
    ![Add a subnet — delegation set to Microsoft.PowerPlatform/vnetaccesslinks](media/private-link-mirroring/05-add-subnet-delegation-powerplatform.png)
 
-4. Select **Save** / **Add**.
+4. Select **Add**.
 
-**IP address range — what's required:**
+**About the IP range:** minimum **`/27` (32 addresses)**; the subnet must be **dedicated**
+(no other resources); it must have **line-of-sight** to Cosmos (same VNet as the private
+endpoint, or a peered VNet with routing) and resolve the Cosmos private DNS
+(`privatelink.documents.azure.com`); avoid overlapping `10.0.1.x`.
 
-- **Minimum size: `/27` (32 addresses).** Azure reserves 5 per subnet; the gateway
-  provisions multiple member nodes, so `/27` is the smallest supported. Use a larger range
-  (`/26`, `/25`) only if you plan to scale the gateway to many members.
-- The subnet must be **dedicated** — no other resources (VMs, other private endpoints, etc.)
-  may live in it.
-- It must have **network line-of-sight** to the Cosmos account: same VNet as the private
-  endpoint, or a **peered** VNet with routing, and it must be able to **resolve the Cosmos
-  private DNS** name (`privatelink.documents.azure.com`) to the private IP.
-- Pick a range that does **not** overlap `10.0.1.x` (used internally by the gateway).
+## Step 3 — Configure Cosmos trust and RBAC (Azure Cloud Shell)
 
-> Tip: in this repo's `/24` VNets the gateway subnet defaults to the 5th `/27`
-> (`…​.128/27`), leaving the web app (`.0/27`) and private endpoints (`.32/27`) untouched.
+These three settings have **no portal UI**. Run them once in **Azure Cloud Shell** — click the
+**`>_`** icon in the Azure portal top bar and choose **Bash**. Set the variables first:
 
-### Step 1 — Configure Cosmos trust + gateway (PowerShell)
-
-```powershell
-Connect-AzAccount
-./tools/setup-mirroring-private-link.ps1 `
-  -SubscriptionId     <sub-guid> `
-  -ResourceGroup      rg-<env> `
-  -CosmosAccountName  cosmos-<env> `
-  -VNetName           vnet-<env> `
-  -FabricSubnetName   snet-fabric `
-  -FabricWorkspaceId  <fabric-workspace-guid> `
-  -CapacityId         <fabric-capacity-guid> `
-  -CosmosDatabaseName CosmosMirrorDatabase `
-  -MirrorName         <env>-mirror
+```bash
+SUB="<subscription-id>"
+RG="rg-<env>"
+ACCT="cosmos-<env>"
+WSID="<fabric-workspace-id>"          # the GUID from your Fabric workspace URL
+az account set --subscription "$SUB"
+TENANT=$(az account show --query tenantId -o tsv)
+ME=$(az ad signed-in-user show --query id -o tsv)
 ```
 
-This script:
+**3a. Data-plane RBAC** — grant your own identity the metadata/analytics read actions Fabric
+mirroring needs (plus Built-in Data Contributor):
 
-1. Registers the `Microsoft.PowerPlatform` resource provider.
-2. Verifies the delegated gateway subnet exists.
-3. Enables `EnableFabricNetworkAclBypass`.
-4. Authorizes the trusted Fabric workspace (`networkAclBypass = AzureServices`).
-5. Creates (or reuses) the **Fabric VNet Data Gateway** bound to `snet-fabric`.
-6. Stops at the manual OAuth gate (Step 2), then — once you supply the connection —
-   creates and starts the mirror (Step 3).
+```bash
+az cosmosdb sql role definition create -a "$ACCT" -g "$RG" --body '{
+  "RoleName": "Fabric Mirroring Metadata Reader",
+  "Type": "CustomRole",
+  "AssignableScopes": ["/"],
+  "Permissions": [{ "DataActions": [
+    "Microsoft.DocumentDB/databaseAccounts/readMetadata",
+    "Microsoft.DocumentDB/databaseAccounts/readAnalytics"
+  ]}]
+}'
 
-### Step 2 — Create the Azure Cosmos DB v2 connection (manual, OAuth)
+ROLE_ID=$(az cosmosdb sql role definition list -a "$ACCT" -g "$RG" \
+  --query "[?roleName=='Fabric Mirroring Metadata Reader'].id | [0]" -o tsv)
 
-This is the one step that can't be automated.
+az cosmosdb sql role assignment create -a "$ACCT" -g "$RG" \
+  --role-definition-id "$ROLE_ID" --principal-id "$ME" --scope "/"
 
-1. Fabric portal → **Settings** → **Manage connections and gateways** → **Connections**
-   → **+ New**.
-2. Connection type: **Azure Cosmos DB v2**. Connectivity: **Virtual Network**.
-3. Gateway: the VNet Data Gateway created in Step 1.
-4. Authentication kind: **OAuth 2.0** (Organizational account).
-5. Endpoint: `https://<account-name>.documents.azure.com:443/`
-6. **Test connection** → **Create**. Copy the connection's name or id.
-
-### Step 3 — Create and start the mirror (REST)
-
-Re-run the setup script with the connection you just created:
-
-```powershell
-./tools/setup-mirroring-private-link.ps1 `
-  -SubscriptionId <sub-guid> -ResourceGroup rg-<env> -CosmosAccountName cosmos-<env> `
-  -VNetName vnet-<env> -FabricWorkspaceId <ws-guid> `
-  -CosmosDatabaseName CosmosMirrorDatabase -MirrorName <env>-mirror `
-  -ConnectionId <cosmos-v2-connection-guid>          # or -ConnectionName "<name>"
+az cosmosdb sql role assignment create -a "$ACCT" -g "$RG" \
+  --role-definition-id 00000000-0000-0000-0000-000000000002 --principal-id "$ME" --scope "/"
 ```
 
-It creates the mirrored database via `POST /v1/workspaces/{ws}/mirroredDatabases` with a
-`CosmosDb` source referencing the connection, then calls `startMirroring`. Alternatively,
-create the mirror in the Fabric UX (**Create → Mirrored Azure Cosmos DB**), or use the
-[`AzureCosmosDB/fabric-cosmos-mirror`](https://github.com/AzureCosmosDB/fabric-cosmos-mirror)
-Python sample.
+**3b. Enable the Fabric network ACL bypass capability:**
 
-### Step 4 — Verify
+```bash
+az cosmosdb update -g "$RG" -n "$ACCT" --capabilities EnableFabricNetworkAclBypass
+```
 
-In the mirrored database, open **Monitor replication**. Status should reach *Running* and
-row counts should climb. Because public access stays **Disabled**, this proves Fabric is
-reaching Cosmos through the trusted-workspace bypass over the private gateway.
+> If the account already has other capabilities, list them all in one `--capabilities` flag —
+> this flag replaces the set.
+
+**3c. Authorize the trusted Fabric workspace:**
+
+```bash
+az cosmosdb update -g "$RG" -n "$ACCT" \
+  --network-acl-bypass AzureServices \
+  --network-acl-bypass-resource-ids \
+  "/tenants/$TENANT/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/Fabric/providers/Microsoft.Fabric/workspaces/$WSID"
+```
+
+> Azure also surfaces these exact steps in the Cosmos account's **Mirroring in Fabric** blade
+> (**Apply RBAC policies** and **Configure private networks**), which likewise provides them as
+> commands — there is no click-only equivalent today.
+>
+> ![Cosmos DB — Mirroring in Fabric guided wizard](media/private-link-mirroring/08-mirroring-in-fabric-wizard.png)
 
 ---
 
-## Reset (re-run from a clean baseline)
+# Part 2 — Fabric portal: gateway, connection, and mirror
 
-To reset the account's network ACL (e.g., remove the leftover IP allowlist from an older
-setup) and, optionally, named Fabric artifacts, use the reset script. It is **dry-run by
-default**; add `-Execute` to apply. Fabric deletions require **explicit ids** so a shared
-workspace is never touched by accident.
+## Step 4 — Create the VNet Data Gateway
 
-```powershell
-# Preview only:
-./tools/reset-mirroring-private-link.ps1 -SubscriptionId <sub> -ResourceGroup rg-<env> -CosmosAccountName cosmos-<env>
+1. In the **Fabric portal**, select the **gear (Settings)** → **Manage connections and
+   gateways**.
+2. Open the **Virtual network data gateways** tab → **+ New**.
+3. Provide: **Subscription**, **Resource group**, **Virtual network** (`vnet-<env>`),
+   **Subnet** (`snet-fabric` from Step 2), a **Gateway name**, and an inactivity timeout.
+4. Select **Create**. Fabric provisions the gateway inside your VNet, in the same region.
 
-# Clear leftover IP firewall rules for real:
-./tools/reset-mirroring-private-link.ps1 -SubscriptionId <sub> -ResourceGroup rg-<env> -CosmosAccountName cosmos-<env> -Execute
+## Step 5 — Create the Azure Cosmos DB v2 connection (OAuth)
 
-# Full reset incl. a specific mirror + connection:
-./tools/reset-mirroring-private-link.ps1 -SubscriptionId <sub> -ResourceGroup rg-<env> -CosmosAccountName cosmos-<env> `
-  -ClearAclBypass -RemoveCapability -FabricWorkspaceId <ws> -MirrorId <m> -ConnectionId <c> -Execute
-```
+1. Still under **Manage connections and gateways**, open **Connections → + New**.
+2. **Connection type:** `Azure Cosmos DB v2`. **Connectivity:** **Virtual Network**, and select
+   the **gateway** created in Step 4.
+3. **Azure Cosmos DB endpoint:** `https://<account-name>.documents.azure.com:443/`
+4. **Authentication kind:** **OAuth 2.0** (Organizational account) → sign in.
+5. Select **Test connection**, then **Create**.
 
-## Automation summary
+> Private-network mirroring supports **OAuth-based authentication only**. This is the one step
+> that always requires an interactive sign-in.
 
-| Step | Automatable | Mechanism |
+## Step 6 — Create the mirrored database
+
+1. In your **Fabric workspace**, select **+ New item → Mirrored Azure Cosmos DB** (or
+   **Create → Mirror data → Mirrored Azure Cosmos DB**).
+2. Choose the **Azure Cosmos DB v2** connection from Step 5.
+3. Select the **database** (and, optionally, specific containers) to mirror.
+4. Select **Connect / Create** to start mirroring.
+
+## Step 7 — Verify
+
+In the mirrored database, open **Monitor replication**. The status should reach *Running* and
+row counts should climb — all while Cosmos public access stays **Disabled**, proving Fabric is
+reaching the account through the trusted-workspace bypass over the private gateway.
+
+---
+
+## Reset — start over from a clean baseline (portal)
+
+1. **Fabric portal:** delete the **mirrored database**, then the **Cosmos DB v2 connection**,
+   then the **VNet Data Gateway** (Manage connections and gateways).
+2. **Azure portal:** delete the **`snet-fabric`** subnet (Virtual network → Subnets). If it
+   reports *in use by PowerPlatformSAL*, wait — Power Platform releases the delegation link
+   **asynchronously** after the gateway is deleted (can take up to ~1 hour), then retry.
+3. **Azure Cloud Shell** (to undo the Step 3 settings):
+
+   ```bash
+   az cosmosdb update -g "$RG" -n "$ACCT" --network-acl-bypass None
+   az cosmosdb update -g "$RG" -n "$ACCT" --capabilities ""    # remove EnableFabricNetworkAclBypass
+   ```
+
+## What's portal vs. Cloud Shell
+
+| Step | Where | |
 |---|---|---|
-| Cosmos + VNet + Private Endpoint + DNS | ✅ | Bicep (`infra/resources.bicep`) |
-| Mirroring RBAC (custom role + assignments) | ✅ | Bicep or `Az.CosmosDB` |
-| `EnableFabricNetworkAclBypass` | ✅ | Bicep `capabilities[]` / `Set-AzResource -UsePatchSemantics` |
-| Trusted workspace ACL bypass | ✅ | Bicep or `Update-AzCosmosDBAccount -NetworkAclBypassResourceId` |
-| Register `Microsoft.PowerPlatform` | ✅ | `Register-AzResourceProvider` |
-| Delegated gateway subnet | ✅ | Bicep subnet `delegations[]` |
-| Fabric VNet Data Gateway | ✅ | Fabric REST `POST /v1/gateways` |
-| **Cosmos DB v2 connection (OAuth 2.0)** | ❌ | **Manual — interactive OAuth in Fabric UX** |
-| Create + start mirror | ✅ | Fabric REST `POST /v1/workspaces/{ws}/mirroredDatabases` |
+| Register `Microsoft.PowerPlatform` | Azure portal | ✅ click-only |
+| Delegated gateway subnet | Azure portal | ✅ click-only |
+| Data-plane RBAC | Azure **Cloud Shell** | ⚠️ no portal UI |
+| `EnableFabricNetworkAclBypass` | Azure **Cloud Shell** | ⚠️ no portal UI |
+| Trusted-workspace authorization | Azure **Cloud Shell** | ⚠️ no portal UI |
+| VNet Data Gateway | Fabric portal | ✅ click-only |
+| Cosmos DB v2 connection (OAuth) | Fabric portal | ✅ click-only (interactive sign-in) |
+| Mirrored database | Fabric portal | ✅ click-only |
 
-## Notes & gotchas
-
-- The gateway subnet must be **empty** and **dedicated**, delegated to
-  `Microsoft.PowerPlatform/vnetaccesslinks`, and able to resolve the Cosmos private DNS
-  name. This repo defaults it to the 5th `/27` of the VNet (`snet-fabric`).
-- Private network mirroring supports **OAuth-based auth only** for the Cosmos v2
-  connection.
-- Keep the trusted-workspace bypass and `EnableFabricNetworkAclBypass` in place after
-  setup — they are what let Fabric keep replicating with public access disabled. Only the
-  **IP firewall rules** from the older approach are safe to remove.
-- Cosmos account and Fabric capacity must be in the **same region**.
+> Prefer infrastructure-as-code instead of the manual flow? The repo's `infra/` Bicep and
+> `tools/*.ps1` scripts automate Parts 1 and 2 (except the interactive OAuth connection). They
+> are entirely optional and not required for this portal walkthrough.

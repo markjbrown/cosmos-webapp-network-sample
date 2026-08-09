@@ -102,19 +102,20 @@ You can also configure Mirroring manually in the Fabric portal and just type the
 
 When Cosmos has **public network access disabled**, you can mirror into Fabric **without**
 maintaining the large DataFactory/PowerQueryOnline IP allowlists by using a **Fabric
-Virtual Network Data Gateway** plus a trusted-workspace network ACL bypass. This repo
-automates everything except the one interactive **OAuth** step:
+Virtual Network Data Gateway** plus a trusted-workspace network ACL bypass.
 
-- **Bicep** (`infra/resources.bicep`, set `FABRIC_WORKSPACE_ID`) provisions the
-  `EnableFabricNetworkAclBypass` capability, the trusted-workspace bypass, the custom
-  mirroring RBAC role, and the delegated `snet-fabric` gateway subnet.
-- **`tools/setup-mirroring-private-link.ps1`** registers the Power Platform RP, creates
-  the VNet Data Gateway, and creates + starts the mirror via the Fabric REST API.
-- **`tools/reset-mirroring-private-link.ps1`** resets the account's network ACL (and
-  optional named Fabric artifacts) to a clean baseline — dry-run by default.
+**[docs/mirroring-over-private-link.md](docs/mirroring-over-private-link.md)** is a
+**portal-based** step-by-step (Azure portal + Fabric portal, with screenshots). Note that
+three Cosmos-account settings currently have **no portal UI** (the network ACL bypass
+capability, the trusted-workspace authorization, and data-plane RBAC) — the guide runs those
+in **Azure Cloud Shell**, which is built into the Azure portal.
 
-See **[docs/mirroring-over-private-link.md](docs/mirroring-over-private-link.md)** for the
-full step-by-step guide and automation breakdown.
+Prefer infrastructure-as-code? The following automate the same setup (optional):
+
+- **Bicep** (`infra/resources.bicep`, set `FABRIC_WORKSPACE_ID`) — capability,
+  trusted-workspace bypass, custom mirroring RBAC role, and the delegated `snet-fabric` subnet.
+- **`tools/setup-mirroring-private-link.ps1`** — VNet Data Gateway + mirror creation via REST.
+- **`tools/reset-mirroring-private-link.ps1`** — reset the network ACL / Fabric artifacts.
 
 ## Switching Cosmos network mode
 
