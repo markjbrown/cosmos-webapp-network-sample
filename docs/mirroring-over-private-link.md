@@ -1,6 +1,6 @@
-# Enable Cosmos DB Fabric Mirroring over Private Link (VNet Data Gateway) — Portal guide
+# Enable Cosmos DB Fabric Mirroring over Private Link (VNet Data Gateway)
 
-This is a **portal-based** walkthrough for mirroring an **Azure Cosmos DB for NoSQL**
+This is a walkthrough for mirroring an **Azure Cosmos DB for NoSQL**
 account into **Microsoft Fabric** when the account has **public network access disabled**
 and is reachable only over a **Private Endpoint / VNet** — **without** maintaining the large
 DataFactory / PowerQueryOnline IP allowlists.
@@ -8,16 +8,10 @@ DataFactory / PowerQueryOnline IP allowlists.
 It uses a **Fabric Virtual Network Data Gateway** that runs *inside your VNet* and reaches
 Cosmos privately, plus a trusted-workspace **network ACL bypass**.
 
-> ### ⚠️ Three settings have no portal UI (platform limitation)
-> Almost every step here is done by clicking in the **Azure portal** and the **Fabric
-> portal**. However, **three Cosmos-account settings currently have no portal UI at all**:
-> the **`EnableFabricNetworkAclBypass`** capability, the **trusted-workspace authorization**,
-> and the Cosmos **data-plane RBAC**. There is no blade or toggle for them — even Azure's own
-> **"Mirroring in Fabric"** wizard hands you a script for these.
->
-> To keep everything *inside the portal* (no local terminal, no `.ps1`/`.sh` files), run those
-> three settings' commands in **Azure Cloud Shell** — the **`>_`** icon in the Azure portal
-> top bar. They are collected together in **Step 3**.
+> Most steps are done by clicking in the **Azure portal** and the **Fabric portal**. Three
+> Cosmos-account settings (the network ACL bypass capability, the trusted-workspace
+> authorization, and data-plane RBAC) don't have a portal control, so **Step 3** provides the
+> bare **Azure CLI** / **Azure PowerShell** commands for them.
 
 ## Why this approach
 
@@ -96,25 +90,22 @@ Your account is reachable through an approved **private endpoint** (public acces
 endpoint, or a peered VNet with routing) and resolve the Cosmos private DNS
 (`privatelink.documents.azure.com`); avoid overlapping `10.0.1.x`.
 
-## Step 3 — Configure Cosmos trust and RBAC (Azure Cloud Shell)
+## Step 3 — Configure Cosmos trust and RBAC (CLI / PowerShell)
 
-These three settings have **no portal UI**. Run them once in **Azure Cloud Shell** — click the
-**`>_`** icon in the Azure portal top bar and choose **Bash**. Set the variables first:
+These three settings (data-plane RBAC, the `EnableFabricNetworkAclBypass` capability, and the
+trusted-workspace authorization) are set with the bare commands below — pick **Azure CLI** or
+**Azure PowerShell**. Run them once against the Cosmos account.
+
+### Azure CLI
 
 ```bash
-SUB="<subscription-id>"
 RG="rg-<env>"
 ACCT="cosmos-<env>"
-WSID="<fabric-workspace-id>"          # the GUID from your Fabric workspace URL
-az account set --subscription "$SUB"
+WSID="<fabric-workspace-id>"                     # GUID from the Fabric workspace URL
 TENANT=$(az account show --query tenantId -o tsv)
 ME=$(az ad signed-in-user show --query id -o tsv)
-```
 
-**3a. Data-plane RBAC** — grant your own identity the metadata/analytics read actions Fabric
-mirroring needs (plus Built-in Data Contributor):
-
-```bash
+# 3a. Data-plane RBAC (custom metadata/analytics reader + Built-in Data Contributor)
 az cosmosdb sql role definition create -a "$ACCT" -g "$RG" --body '{
   "RoleName": "Fabric Mirroring Metadata Reader",
   "Type": "CustomRole",
@@ -124,40 +115,57 @@ az cosmosdb sql role definition create -a "$ACCT" -g "$RG" --body '{
     "Microsoft.DocumentDB/databaseAccounts/readAnalytics"
   ]}]
 }'
-
 ROLE_ID=$(az cosmosdb sql role definition list -a "$ACCT" -g "$RG" \
   --query "[?roleName=='Fabric Mirroring Metadata Reader'].id | [0]" -o tsv)
+az cosmosdb sql role assignment create -a "$ACCT" -g "$RG" --scope "/" \
+  --principal-id "$ME" --role-definition-id "$ROLE_ID"
+az cosmosdb sql role assignment create -a "$ACCT" -g "$RG" --scope "/" \
+  --principal-id "$ME" --role-definition-id 00000000-0000-0000-0000-000000000002
 
-az cosmosdb sql role assignment create -a "$ACCT" -g "$RG" \
-  --role-definition-id "$ROLE_ID" --principal-id "$ME" --scope "/"
-
-az cosmosdb sql role assignment create -a "$ACCT" -g "$RG" \
-  --role-definition-id 00000000-0000-0000-0000-000000000002 --principal-id "$ME" --scope "/"
-```
-
-**3b. Enable the Fabric network ACL bypass capability:**
-
-```bash
+# 3b. Enable the Fabric network ACL bypass capability
 az cosmosdb update -g "$RG" -n "$ACCT" --capabilities EnableFabricNetworkAclBypass
-```
 
-> If the account already has other capabilities, list them all in one `--capabilities` flag —
-> this flag replaces the set.
-
-**3c. Authorize the trusted Fabric workspace:**
-
-```bash
-az cosmosdb update -g "$RG" -n "$ACCT" \
-  --network-acl-bypass AzureServices \
+# 3c. Authorize the trusted Fabric workspace
+az cosmosdb update -g "$RG" -n "$ACCT" --network-acl-bypass AzureServices \
   --network-acl-bypass-resource-ids \
   "/tenants/$TENANT/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/Fabric/providers/Microsoft.Fabric/workspaces/$WSID"
 ```
 
-> Azure also surfaces these exact steps in the Cosmos account's **Mirroring in Fabric** blade
-> (**Apply RBAC policies** and **Configure private networks**), which likewise provides them as
-> commands — there is no click-only equivalent today.
->
-> ![Cosmos DB — Mirroring in Fabric guided wizard](media/private-link-mirroring/08-mirroring-in-fabric-wizard.png)
+### Azure PowerShell
+
+```powershell
+$RG    = "rg-<env>"
+$ACCT  = "cosmos-<env>"
+$WSID  = "<fabric-workspace-id>"                 # GUID from the Fabric workspace URL
+$TENANT = (Get-AzContext).Tenant.Id
+$ME     = (Get-AzADUser -SignedIn).Id
+
+# 3a. Data-plane RBAC (custom metadata/analytics reader + Built-in Data Contributor)
+New-AzCosmosDBSqlRoleDefinition -AccountName $ACCT -ResourceGroupName $RG `
+  -Type CustomRole -RoleName "Fabric Mirroring Metadata Reader" -AssignableScope "/" `
+  -DataAction @(
+    'Microsoft.DocumentDB/databaseAccounts/readMetadata',
+    'Microsoft.DocumentDB/databaseAccounts/readAnalytics')
+$roleId = (Get-AzCosmosDBSqlRoleDefinition -AccountName $ACCT -ResourceGroupName $RG |
+  Where-Object RoleName -eq "Fabric Mirroring Metadata Reader").Id
+New-AzCosmosDBSqlRoleAssignment -AccountName $ACCT -ResourceGroupName $RG -Scope "/" `
+  -PrincipalId $ME -RoleDefinitionId $roleId
+New-AzCosmosDBSqlRoleAssignment -AccountName $ACCT -ResourceGroupName $RG -Scope "/" `
+  -PrincipalId $ME -RoleDefinitionName "Cosmos DB Built-in Data Contributor"
+
+# 3b. Enable the Fabric network ACL bypass capability
+$c = Get-AzResource -ResourceGroupName $RG -Name $ACCT -ResourceType "Microsoft.DocumentDB/databaseAccounts"
+$c.Properties.capabilities += @{ name = "EnableFabricNetworkAclBypass" }
+$c | Set-AzResource -UsePatchSemantics -Force
+
+# 3c. Authorize the trusted Fabric workspace
+Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass AzureServices `
+  -NetworkAclBypassResourceId "/tenants/$TENANT/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/Fabric/providers/Microsoft.Fabric/workspaces/$WSID"
+```
+
+> The CLI `--capabilities` flag replaces the capability set — if the account already has other
+> capabilities, include them all. Azure also surfaces these same steps in the Cosmos account's
+> **Mirroring in Fabric** blade (**Apply RBAC policies** / **Configure private networks**).
 
 ---
 
@@ -200,33 +208,33 @@ reaching the account through the trusted-workspace bypass over the private gatew
 
 ---
 
-## Reset — start over from a clean baseline (portal)
+## Reset — start over from a clean baseline
 
 1. **Fabric portal:** delete the **mirrored database**, then the **Cosmos DB v2 connection**,
    then the **VNet Data Gateway** (Manage connections and gateways).
 2. **Azure portal:** delete the **`snet-fabric`** subnet (Virtual network → Subnets). If it
    reports *in use by PowerPlatformSAL*, wait — Power Platform releases the delegation link
    **asynchronously** after the gateway is deleted (can take up to ~1 hour), then retry.
-3. **Azure Cloud Shell** (to undo the Step 3 settings):
+3. **CLI** (to undo the Step 3 settings):
 
    ```bash
    az cosmosdb update -g "$RG" -n "$ACCT" --network-acl-bypass None
    az cosmosdb update -g "$RG" -n "$ACCT" --capabilities ""    # remove EnableFabricNetworkAclBypass
    ```
 
-## What's portal vs. Cloud Shell
+## Where each step is done
 
-| Step | Where | |
-|---|---|---|
-| Register `Microsoft.PowerPlatform` | Azure portal | ✅ click-only |
-| Delegated gateway subnet | Azure portal | ✅ click-only |
-| Data-plane RBAC | Azure **Cloud Shell** | ⚠️ no portal UI |
-| `EnableFabricNetworkAclBypass` | Azure **Cloud Shell** | ⚠️ no portal UI |
-| Trusted-workspace authorization | Azure **Cloud Shell** | ⚠️ no portal UI |
-| VNet Data Gateway | Fabric portal | ✅ click-only |
-| Cosmos DB v2 connection (OAuth) | Fabric portal | ✅ click-only (interactive sign-in) |
-| Mirrored database | Fabric portal | ✅ click-only |
+| Step | Where |
+|---|---|
+| Register `Microsoft.PowerPlatform` | Azure portal |
+| Delegated gateway subnet | Azure portal |
+| Data-plane RBAC | Azure CLI / PowerShell |
+| `EnableFabricNetworkAclBypass` | Azure CLI / PowerShell |
+| Trusted-workspace authorization | Azure CLI / PowerShell |
+| VNet Data Gateway | Fabric portal |
+| Cosmos DB v2 connection (OAuth) | Fabric portal (interactive sign-in) |
+| Mirrored database | Fabric portal |
 
 > Prefer infrastructure-as-code instead of the manual flow? The repo's `infra/` Bicep and
 > `tools/*.ps1` scripts automate Parts 1 and 2 (except the interactive OAuth connection). They
-> are entirely optional and not required for this portal walkthrough.
+> are entirely optional and not required for this walkthrough.
