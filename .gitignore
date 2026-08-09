@@ -28,3 +28,4 @@ Thumbs.db
 
 # Local build outputs
 _dist/
+*.zip
