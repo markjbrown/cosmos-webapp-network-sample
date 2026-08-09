@@ -1,0 +1,16 @@
+.git/
+.github/
+.azure/
+.vscode/
+.idea/
+_dist/
+media/
+tools/
+*.md
+LICENSE
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+.env
+.venv/

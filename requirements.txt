@@ -2,4 +2,8 @@ fastapi==0.115.6
 uvicorn==0.32.1
 azure-cosmos==4.5.1
 azure-identity==1.15.0
+azure-mgmt-cosmosdb==9.6.0
+aiohttp==3.11.11
+pyodbc==5.2.0
+requests==2.32.3
 gunicorn==21.2.0

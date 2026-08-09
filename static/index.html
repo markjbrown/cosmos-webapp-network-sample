@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cosmos DB Failover &amp; Mirror Test</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f0f2f5; color: #1a1a1a; }
+  h1 { padding: 20px 24px; background: #0078d4; color: white; font-size: 20px; }
+  h1 small { font-size: 13px; opacity: 0.85; font-weight: 400; margin-left: 12px; }
+  .container { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+  .card { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); margin-bottom: 16px; overflow: hidden; }
+  .card-header { padding: 14px 20px; background: #fafafa; border-bottom: 1px solid #e8e8e8; font-weight: 600; font-size: 15px; cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; }
+  .card-header:hover { background: #f0f0f0; }
+  .card-header .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e8e8e8; color: #555; font-weight: 500; }
+  .card-header .badge.ok { background: #d4edda; color: #155724; }
+  .card-header .badge.warn { background: #fff3cd; color: #664d03; }
+  .card-header .badge.fail { background: #f8d7da; color: #721c24; }
+  .card-body { padding: 20px; display: none; }
+  .card-body.open { display: block; }
+  label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; color: #444; }
+  label:first-child { margin-top: 0; }
+  input[type=text], input[type=number], input[type=password], select { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; background: white; }
+  input:focus, select:focus { outline: none; border-color: #0078d4; box-shadow: 0 0 0 2px rgba(0,120,212,0.15); }
+  .row { display: flex; gap: 12px; align-items: flex-end; }
+  .row > * { flex: 1; }
+  button { padding: 9px 20px; background: #0078d4; color: white; border: none; border-radius: 4px; font-size: 14px; cursor: pointer; margin-top: 14px; }
+  button:hover { background: #006cbe; }
+  button:disabled { background: #999; cursor: not-allowed; }
+  button.secondary { background: #e0e0e0; color: #333; }
+  button.secondary:hover { background: #d0d0d0; }
+  button.danger { background: #d13438; }
+  button.danger:hover { background: #b52e31; }
+  button.big { font-size: 16px; padding: 12px 28px; }
+  .result { margin-top: 14px; padding: 12px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px; font-size: 13px; white-space: pre-wrap; font-family: 'Consolas', monospace; max-height: 360px; overflow-y: auto; }
+  .result.success { border-color: #107c10; background: #f0fff0; }
+  .result.error { border-color: #d13438; background: #fff5f5; }
+  .result.info { border-color: #0078d4; background: #f0f8ff; }
+  code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 12px; font-family: 'Consolas', monospace; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #ccc; border-top-color: #0078d4; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .verdict { padding: 18px 22px; border-radius: 6px; margin-bottom: 14px; font-size: 16px; font-weight: 600; }
+  .verdict.pass { background: #d4edda; color: #155724; border: 2px solid #28a745; }
+  .verdict.partial { background: #fff3cd; color: #664d03; border: 2px solid #f59e0b; }
+  .verdict.fail { background: #f8d7da; color: #721c24; border: 2px solid #dc3545; }
+  .verdict.run { background: #fff3cd; color: #856404; border: 2px solid #ffc107; }
+  .verdict .verdict-detail { font-size: 13px; font-weight: 400; margin-top: 8px; line-height: 1.5; }
+  .verdict .verdict-detail strong { font-weight: 600; }
+  .step { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 14px; border-bottom: 1px solid #eee; }
+  .step:last-child { border-bottom: none; }
+  .step-icon { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; background: #e0e0e0; color: #666; }
+  .step-icon.pending { background: #e0e0e0; }
+  .step-icon.run { background: #ffc107; color: white; }
+  .step-icon.ok { background: #28a745; color: white; }
+  .step-icon.warn { background: #f59e0b; color: white; }
+  .step-icon.fail { background: #dc3545; color: white; }
+  .step-text { flex: 1; }
+  .step-detail { font-size: 12px; color: #666; }
+  .help { background: #fffbe6; border: 1px solid #ffe58f; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; font-size: 13px; color: #614700; }
+  .help strong { color: #444; }
+  .help code { background: rgba(0,0,0,0.06); }
+</style>
+</head>
+<body>
+<h1>Cosmos DB Failover &amp; Mirror Verification <small id="appName"></small></h1>
+<div class="container">
+
+  <!-- Run Full Test -->
+  <div class="card">
+    <div class="card-header" onclick="toggle(this)">▶ Run Full Test <span id="runBadge" class="badge">ready</span></div>
+    <div class="card-body open" id="runSection">
+      <div class="help">
+        Starts a long-running insert loop, then triggers a regional failover <strong>while writes are in flight</strong>.
+        After the failover completes, verifies every successful insert reached Fabric.
+      </div>
+      <div class="row">
+        <div><label>Total items</label><input type="number" id="runItems" value="300" min="50" max="2000"></div>
+        <div><label>Delay between inserts (ms)</label><input type="number" id="runDelay" value="100" min="0" max="2000"></div>
+        <div><label>Trigger failover after N items</label><input type="number" id="runFailoverAt" value="40" min="5" max="500"></div>
+        <div><label>Failover to region</label><select id="runRegion"></select></div>
+      </div>
+      <button class="big" onclick="runFullTest()">Run Full Test</button>
+      <button class="secondary" onclick="resetData()">Reset Data</button>
+      <div id="runVerdict"></div>
+      <div id="runSteps" class="result" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Account Status -->
+  <div class="card">
+    <div class="card-header" onclick="toggle(this)">Account Status <span id="statusBadge" class="badge">—</span></div>
+    <div class="card-body" id="statusSection">
+      <button onclick="loadStatus()">Refresh</button>
+      <div id="statusResult" class="result" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Fabric Setup -->
+  <div class="card">
+    <div class="card-header" onclick="toggle(this)">Fabric Mirror Setup <span id="fabricBadge" class="badge">—</span></div>
+    <div class="card-body" id="fabricSection">
+      <div class="help" style="background:#f0fdf4; border-color:#86efac; color:#166534;">
+        <strong>Easiest path:</strong> sign in with your own Microsoft account so the harness uses <em>your</em> Fabric workspace access. No grants to manage.
+        <span id="userAuthStatus" style="margin-left:8px;"></span>
+        <div style="margin-top:6px;">
+          <button class="secondary" style="padding:4px 10px; font-size:12px;" onclick="userSignIn()">Sign in as me</button>
+          <button class="secondary" style="padding:4px 10px; font-size:12px;" onclick="userSignOut()">Sign out</button>
+          <button class="secondary" style="padding:4px 10px; font-size:12px;" onclick="togglePasteToken()">Paste a token instead</button>
+        </div>
+        <div id="userAuthCode" style="display:none; margin-top:8px; padding:12px; background:#fff; border:2px solid #16a34a; border-radius:6px;">
+          <div style="font-size:13px; color:#475569; margin-bottom:6px;">
+            <strong>Step 1:</strong> <button id="copyCodeBtn" class="secondary" style="padding:2px 8px; font-size:12px;" onclick="copyAuthCode()">Copy code</button>
+            <strong style="margin-left:12px;">Step 2:</strong> <button class="secondary" style="padding:2px 8px; font-size:12px;" onclick="openDeviceLogin()">Open sign-in page</button>
+            and paste the code.
+          </div>
+          <div id="userAuthCodeValue" style="font-family:monospace; font-size:28px; font-weight:bold; letter-spacing:3px; padding:8px; background:#f9fafb; text-align:center; border-radius:4px; user-select:all;"></div>
+          <div style="font-size:11px; color:#64748b; margin-top:6px;">URL: <a id="userAuthUri" target="_blank" rel="noopener">https://microsoft.com/devicelogin</a></div>
+        </div>
+        <div id="pasteTokenBox" style="display:none; margin-top:8px; padding:12px; background:#fff; border:2px solid #2563eb; border-radius:6px;">
+          <div style="font-size:13px; color:#1e3a8a; margin-bottom:6px;">
+            If your tenant blocks device-code sign-in (Conditional Access), run this on your managed machine and paste the output:
+          </div>
+          <div style="font-family:monospace; font-size:12px; padding:8px; background:#f1f5f9; border-radius:4px; user-select:all;">
+            az account get-access-token --resource https://database.windows.net --query accessToken -o tsv
+          </div>
+          <textarea id="pastedTokenInput" placeholder="eyJ0eXAiOiJKV1QiLC..." style="width:100%; min-height:80px; margin-top:6px; font-family:monospace; font-size:11px;"></textarea>
+          <button class="secondary" style="padding:4px 10px; font-size:12px; margin-top:6px;" onclick="submitPastedToken()">Use this token</button>
+        </div>
+      </div>
+
+      <div class="help">
+        <strong>Or grant the MI:</strong> open the Fabric workspace → <em>Manage access</em> → add this app's managed identity (<code id="miHint">app service name</code>) as <strong>Contributor</strong>. <button class="secondary" style="margin:6px 0 0 0; padding: 4px 10px; font-size: 12px;" onclick="loadIdentity()">Show identity to grant</button>
+      </div>
+      <div id="identityResult" class="result" style="display:none"></div>
+
+      <div style="display:flex; gap:16px; margin: 8px 0 14px 0; align-items:center;">
+        <label style="margin:0; font-weight:600;">Mode:</label>
+        <label style="margin:0; font-weight:400;"><input type="radio" name="fabricMode" value="auto" checked onchange="switchFabricMode()"> Auto-discover (needs Fabric REST access)</label>
+        <label style="margin:0; font-weight:400;"><input type="radio" name="fabricMode" value="manual" onchange="switchFabricMode()"> Manual (paste IDs)</label>
+      </div>
+
+      <div id="fabricAutoMode">
+        <div class="row">
+          <div><label>Workspace</label><select id="fabricWorkspace" onchange="onWorkspaceChange()"><option value="">— Loading… —</option></select></div>
+          <div style="flex:0 0 auto;"><label>&nbsp;</label><button class="secondary" onclick="loadWorkspaces()" style="margin: 0;">Reload</button></div>
+        </div>
+        <div class="row">
+          <div><label>Mirrored database</label><select id="fabricDatabase" onchange="onDatabaseChange()"><option value="">— Pick a workspace first —</option></select></div>
+          <div><label>Table</label><select id="fabricTable"><option value="">— Pick a database first —</option></select></div>
+        </div>
+        <div class="row">
+          <div><label>Schema</label><input type="text" id="fabricSchema" value="" placeholder="auto-detected from table"></div>
+        </div>
+        <button onclick="fabricSetup()">Save Configuration</button>
+      </div>
+
+      <div id="fabricManualMode" style="display:none;">
+        <div class="help" style="background:#eef6ff; border-color:#b3d7ff; color:#114a85;">
+          Use this if your tenant blocks "Service principals can use Fabric APIs". You only need workspace Contributor on the MI — no Fabric REST is called.
+          Find the IDs in the Fabric portal URL: <code>app.fabric.microsoft.com/groups/{workspaceId}/...</code>. The SQL endpoint is on the mirrored DB's Settings page.
+        </div>
+        <div class="row">
+          <div><label>Workspace name (label)</label><input type="text" id="manualWsName" placeholder="MyWorkspace"></div>
+          <div><label>Workspace ID (GUID)</label><input type="text" id="manualWsId" placeholder="00000000-0000-0000-0000-000000000000"></div>
+        </div>
+        <label>Mirrored database name</label>
+        <input type="text" id="manualDbName" placeholder="CosmosMirrorDatabasePrivateLink">
+        <label>SQL Analytics endpoint</label>
+        <input type="text" id="manualSqlEndpoint" placeholder="xxxxx.datawarehouse.fabric.microsoft.com">
+        <div class="row">
+          <div><label>Table name</label><input type="text" id="manualTable" placeholder="Items"></div>
+          <div><label>Schema</label><input type="text" id="manualSchema" placeholder="CosmosMirrorDatabase (= Cosmos DB name)"></div>
+        </div>
+        <button onclick="fabricSetupManual()">Save Configuration</button>
+        <button class="secondary" onclick="testFabricConnection()">Test Connection</button>
+        <button class="secondary" onclick="diagnoseFabric()">Diagnose</button>
+      </div>
+
+      <div id="fabricResult" class="result" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Manual Tools -->
+  <div class="card">
+    <div class="card-header" onclick="toggle(this)">Manual Tools (advanced)</div>
+    <div class="card-body" id="manualSection">
+      <label>Generate data only</label>
+      <div class="row">
+        <div><input type="number" id="batchSize" value="100" min="1" max="100000" placeholder="Batch size"></div>
+        <div><input type="number" id="delayMs" value="100" min="0" max="5000" placeholder="Delay ms"></div>
+        <div><button onclick="generateData()">Generate</button></div>
+        <div><button class="secondary" onclick="stopBatch()">Stop</button></div>
+      </div>
+      <div id="generateResult" class="result" style="display:none"></div>
+
+      <label style="margin-top: 18px;">View data (read back from Cosmos)</label>
+      <div class="help">Reads items straight from the Cosmos account over the private endpoint. Works even though public network access is disabled (the app reaches Cosmos via VNet integration + Managed Identity). CMK is transparent — rows come back as plaintext.</div>
+      <div class="row">
+        <div><button onclick="viewData()">View Data</button></div>
+        <div><button class="secondary" onclick="countOnly()">Count Only</button></div>
+      </div>
+      <div id="viewResult" class="result" style="display:none"></div>
+
+      <label style="margin-top: 18px;">Trigger failover only</label>
+      <div class="row">
+        <div><select id="targetRegion"></select></div>
+        <div><button class="danger" onclick="triggerFailover()">Initiate Failover</button></div>
+      </div>
+      <div id="failoverResult" class="result" style="display:none"></div>
+
+      <label style="margin-top: 18px;">Verify a specific batch</label>
+      <div class="row">
+        <div><input type="text" id="verifyBatchId" placeholder="Batch ID"></div>
+        <div><button onclick="verifyMirror()">Verify</button></div>
+      </div>
+      <div id="verifyResult" class="result" style="display:none"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let _activeBatchId = null;
+let _fabricConfigured = false;
+
+function toggle(el) { el.nextElementSibling.classList.toggle('open'); }
+
+function show(id, text, cls) {
+  const el = document.getElementById(id);
+  el.style.display = 'block';
+  el.className = 'result ' + (cls || '');
+  el.textContent = text;
+}
+function showHTML(id, html, cls) {
+  const el = document.getElementById(id);
+  el.style.display = 'block';
+  el.className = 'result ' + (cls || '');
+  el.innerHTML = html;
+}
+function loading(id) {
+  const el = document.getElementById(id);
+  el.style.display = 'block';
+  el.className = 'result';
+  el.innerHTML = '<span class="spinner"></span> Working…';
+}
+function setBadge(id, text, cls) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'badge ' + (cls || '');
+}
+
+async function api(method, path, body, headers) {
+  const opts = { method, headers: { 'Content-Type': 'application/json', ...(headers || {}) } };
+  if (body) opts.body = JSON.stringify(body);
+  const resp = await fetch(path, opts);
+  const text = await resp.text();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error(text.substring(0, 200) || `HTTP ${resp.status}`); }
+  if (!resp.ok) throw new Error(data.detail || JSON.stringify(data));
+  return data;
+}
+
+// ── Account Status ───────────────────────────────────────────────────────────
+async function loadStatus() {
+  loading('statusResult');
+  try {
+    const data = await api('GET', '/api/accountStatus');
+    const lines = [
+      `Account: ${data.name}`,
+      `State:   ${data.provisioningState}`,
+      `Write:   ${data.writeLocations?.join(', ')}`,
+      `Read:    ${data.readLocations?.join(', ')}`,
+      '',
+      'Regions:',
+      ...data.locations.map(l => `  ${l.failoverPriority === 0 ? '★' : ' '} ${l.locationName} (priority ${l.failoverPriority})`)
+    ];
+    show('statusResult', lines.join('\n'), 'info');
+    setBadge('statusBadge', data.writeLocations?.[0] || '—', 'ok');
+
+    // Populate region pickers
+    const regions = data.locations.map(l => l.locationName);
+    const writePrimary = data.writeLocations?.[0];
+    [document.getElementById('targetRegion'), document.getElementById('runRegion')].forEach(sel => {
+      const current = sel.value;
+      sel.innerHTML = '';
+      regions.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r; opt.textContent = r + (r === writePrimary ? ' (current primary)' : '');
+        sel.appendChild(opt);
+      });
+      // Default failover target = a region that is NOT the current primary
+      const preferred = current && regions.includes(current) ? current : regions.find(r => r !== writePrimary);
+      if (preferred) sel.value = preferred;
+    });
+  } catch (e) { show('statusResult', 'Error: ' + e.message, 'error'); setBadge('statusBadge', 'error', 'fail'); }
+}
+
+// ── Identity ─────────────────────────────────────────────────────────────────
+async function loadIdentity() {
+  loading('identityResult');
+  try {
+    const d = await api('GET', '/api/identity');
+    if (d.error) { show('identityResult', 'Error: ' + d.error, 'error'); return; }
+    if (d.appServiceName) document.getElementById('miHint').textContent = d.appServiceName;
+    const lines = [
+      `App Service name: ${d.appServiceName || '(unknown)'}`,
+      `Display name:     ${d.upnOrName || '(unknown)'}`,
+      `App ID:           ${d.appId || '(none)'}`,
+      `Object ID:        ${d.objectId || '(none)'}`,
+      `Tenant ID:        ${d.tenantId || '(none)'}`,
+      '',
+      'In the Fabric workspace → Manage access → add the App ID or App Service name as Contributor.',
+    ];
+    show('identityResult', lines.join('\n'), 'info');
+  } catch (e) { show('identityResult', 'Error: ' + e.message, 'error'); }
+}
+
+// ── User device-code sign-in ─────────────────────────────────────────────────
+let _userAuthPollTimer = null;
+
+async function userSignIn() {
+  const codeBox = document.getElementById('userAuthCode');
+  const statusEl = document.getElementById('userAuthStatus');
+  statusEl.textContent = 'Starting sign-in…';
+  try {
+    const r = await api('POST', '/api/userAuth/start');
+    if (r.error) { statusEl.textContent = 'Error: ' + r.error; return; }
+    if (r.user_code) {
+      document.getElementById('userAuthCodeValue').textContent = r.user_code;
+      document.getElementById('userAuthUri').href = r.verification_uri || 'https://microsoft.com/devicelogin';
+      document.getElementById('userAuthUri').textContent = r.verification_uri || 'microsoft.com/devicelogin';
+      codeBox.style.display = 'block';
+      statusEl.textContent = 'Waiting for you to enter the code…';
+    }
+    if (_userAuthPollTimer) clearInterval(_userAuthPollTimer);
+    _userAuthPollTimer = setInterval(pollUserAuth, 2000);
+  } catch (e) { statusEl.textContent = 'Error: ' + e.message; }
+}
+
+function copyAuthCode() {
+  const code = document.getElementById('userAuthCodeValue').textContent;
+  if (!code) return;
+  navigator.clipboard.writeText(code).then(() => {
+    const btn = document.getElementById('copyCodeBtn');
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  });
+}
+
+function openDeviceLogin() {
+  const uri = document.getElementById('userAuthUri').href || 'https://microsoft.com/devicelogin';
+  window.open(uri, '_blank');
+}
+
+function togglePasteToken() {
+  const box = document.getElementById('pasteTokenBox');
+  box.style.display = box.style.display === 'none' ? 'block' : 'none';
+}
+
+async function submitPastedToken() {
+  const token = document.getElementById('pastedTokenInput').value.trim();
+  const statusEl = document.getElementById('userAuthStatus');
+  if (!token) { statusEl.textContent = 'Paste a token first'; return; }
+  try {
+    const r = await api('POST', '/api/userAuth/pasteToken', { token });
+    statusEl.innerHTML = '<strong style="color:#1d4ed8;">✓ Using pasted token (' + (r.upn || 'user') + ', expires in ' + Math.floor(r.expires_in_sec / 60) + ' min)</strong>';
+    document.getElementById('pasteTokenBox').style.display = 'none';
+    document.getElementById('pastedTokenInput').value = '';
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function pollUserAuth() {
+  try {
+    const s = await api('GET', '/api/userAuth/status');
+    const codeBox = document.getElementById('userAuthCode');
+    const statusEl = document.getElementById('userAuthStatus');
+    if (s.signed_in) {
+      statusEl.innerHTML = '<strong style="color:#166534;">✓ Signed in as ' + (s.upn || 'user') + '</strong>';
+      codeBox.style.display = 'none';
+      if (_userAuthPollTimer) { clearInterval(_userAuthPollTimer); _userAuthPollTimer = null; }
+    } else if (s.error) {
+      statusEl.textContent = 'Error: ' + s.error;
+      codeBox.style.display = 'none';
+      if (_userAuthPollTimer) { clearInterval(_userAuthPollTimer); _userAuthPollTimer = null; }
+    } else if (s.user_code) {
+      document.getElementById('userAuthCodeValue').textContent = s.user_code;
+      codeBox.style.display = 'block';
+    }
+  } catch {}
+}
+
+async function userSignOut() {
+  if (_userAuthPollTimer) { clearInterval(_userAuthPollTimer); _userAuthPollTimer = null; }
+  try {
+    await api('POST', '/api/userAuth/signOut');
+    document.getElementById('userAuthStatus').textContent = 'Signed out.';
+    document.getElementById('userAuthCode').style.display = 'none';
+  } catch (e) { document.getElementById('userAuthStatus').textContent = 'Error: ' + e.message; }
+}
+
+// On load, check whether the server already has a user session
+(async function checkUserAuthOnLoad() {
+  try {
+    const s = await api('GET', '/api/userAuth/status');
+    if (s.signed_in) {
+      document.getElementById('userAuthStatus').innerHTML = '<strong style="color:#166534;">✓ Signed in as ' + (s.upn || 'user') + '</strong>';
+    } else if (s.in_progress && s.user_code) {
+      document.getElementById('userAuthCodeValue').textContent = s.user_code;
+      document.getElementById('userAuthUri').href = s.verification_uri || 'https://microsoft.com/devicelogin';
+      document.getElementById('userAuthUri').textContent = s.verification_uri || 'microsoft.com/devicelogin';
+      document.getElementById('userAuthCode').style.display = 'block';
+      document.getElementById('userAuthStatus').textContent = 'Waiting for sign-in…';
+      _userAuthPollTimer = setInterval(pollUserAuth, 2000);
+    }
+  } catch {}
+})();
+
+// ── Fabric Setup (cascading dropdowns) ───────────────────────────────────────
+async function loadWorkspaces() {
+  const sel = document.getElementById('fabricWorkspace');
+  sel.innerHTML = '<option value="">— Loading… —</option>';
+  try {
+    const data = await api('GET', '/api/fabricWorkspaces');
+    sel.innerHTML = '<option value="">— Select workspace —</option>';
+    data.workspaces.forEach(w => {
+      const opt = document.createElement('option');
+      opt.value = w.id; opt.textContent = w.displayName; opt.dataset.name = w.displayName;
+      sel.appendChild(opt);
+    });
+    // Restore previous selection
+    const saved = localStorage.getItem('fabric_workspace_id');
+    if (saved && [...sel.options].some(o => o.value === saved)) {
+      sel.value = saved;
+      await onWorkspaceChange();
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="">— Error —</option>';
+    show('fabricResult', 'Failed to list workspaces: ' + e.message + '\n\nMake sure the app\'s managed identity has access to Fabric. Click "Show identity to grant" above.', 'error');
+  }
+}
+
+async function onWorkspaceChange() {
+  const sel = document.getElementById('fabricWorkspace');
+  const wsId = sel.value;
+  localStorage.setItem('fabric_workspace_id', wsId);
+  const dbSel = document.getElementById('fabricDatabase');
+  const tblSel = document.getElementById('fabricTable');
+  dbSel.innerHTML = '<option value="">— Loading… —</option>';
+  tblSel.innerHTML = '<option value="">— Pick a database first —</option>';
+  if (!wsId) return;
+  try {
+    const data = await api('GET', `/api/fabricDatabases/${wsId}`);
+    dbSel.innerHTML = '<option value="">— Select database —</option>';
+    data.databases.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.displayName; opt.textContent = d.displayName + (d.provisioningStatus ? ` (${d.provisioningStatus})` : '');
+      dbSel.appendChild(opt);
+    });
+    const saved = localStorage.getItem('fabric_database_name');
+    if (saved && [...dbSel.options].some(o => o.value === saved)) {
+      dbSel.value = saved;
+      await onDatabaseChange();
+    }
+  } catch (e) {
+    dbSel.innerHTML = '<option value="">— Error —</option>';
+    show('fabricResult', 'Failed to list databases: ' + e.message, 'error');
+  }
+}
+
+async function onDatabaseChange() {
+  const wsId = document.getElementById('fabricWorkspace').value;
+  const dbName = document.getElementById('fabricDatabase').value;
+  localStorage.setItem('fabric_database_name', dbName);
+  const tblSel = document.getElementById('fabricTable');
+  tblSel.innerHTML = '<option value="">— Loading… —</option>';
+  if (!wsId || !dbName) return;
+  try {
+    const data = await api('GET', `/api/fabricTables/${wsId}/${encodeURIComponent(dbName)}`);
+    tblSel.innerHTML = '<option value="">— Select table —</option>';
+    data.tables.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.table; opt.textContent = `${t.schema}.${t.table}`;
+      opt.dataset.schema = t.schema;
+      tblSel.appendChild(opt);
+    });
+    const savedTable = localStorage.getItem('fabric_table_name');
+    if (savedTable && [...tblSel.options].some(o => o.value === savedTable)) {
+      tblSel.value = savedTable;
+    }
+    tblSel.onchange = () => {
+      const opt = tblSel.options[tblSel.selectedIndex];
+      if (opt && opt.dataset.schema) document.getElementById('fabricSchema').value = opt.dataset.schema;
+      localStorage.setItem('fabric_table_name', tblSel.value);
+    };
+    if (tblSel.value) tblSel.onchange();
+  } catch (e) {
+    tblSel.innerHTML = '<option value="">— Error —</option>';
+    show('fabricResult', 'Failed to list tables: ' + e.message, 'error');
+  }
+}
+
+async function fabricSetup() {
+  const wsSel = document.getElementById('fabricWorkspace');
+  const wsName = wsSel.options[wsSel.selectedIndex]?.dataset.name;
+  const db = document.getElementById('fabricDatabase').value;
+  const tbl = document.getElementById('fabricTable').value;
+  const schema = document.getElementById('fabricSchema').value.trim() || 'dbo';
+  if (!wsName || !db || !tbl) { show('fabricResult', 'Pick workspace, database, and table', 'error'); return; }
+  loading('fabricResult');
+  try {
+    const data = await api('POST', '/api/fabricSetup', {
+      workspace_name: wsName, database_name: db, table_name: tbl, table_schema: schema,
+    });
+    show('fabricResult', `Saved.\nWorkspace: ${wsName}\nDatabase: ${db}\nTable: ${schema}.${tbl}\nSQL endpoint: ${data.config.sql_endpoint}`, 'success');
+    setBadge('fabricBadge', 'configured', 'ok');
+    _fabricConfigured = true;
+    localStorage.setItem('fabric_workspace_name', wsName);
+  } catch (e) {
+    show('fabricResult', 'Error: ' + e.message, 'error');
+    setBadge('fabricBadge', 'error', 'fail');
+  }
+}
+
+function switchFabricMode() {
+  const mode = document.querySelector('input[name="fabricMode"]:checked').value;
+  document.getElementById('fabricAutoMode').style.display = mode === 'auto' ? 'block' : 'none';
+  document.getElementById('fabricManualMode').style.display = mode === 'manual' ? 'block' : 'none';
+  localStorage.setItem('fabric_mode', mode);
+}
+
+async function fabricSetupManual() {
+  const wsName = document.getElementById('manualWsName').value.trim();
+  const wsId = document.getElementById('manualWsId').value.trim();
+  const dbName = document.getElementById('manualDbName').value.trim();
+  const sqlEndpoint = document.getElementById('manualSqlEndpoint').value.trim();
+  const tbl = document.getElementById('manualTable').value.trim();
+  const schema = document.getElementById('manualSchema').value.trim() || 'dbo';
+  if (!wsName || !wsId || !dbName || !sqlEndpoint || !tbl) {
+    show('fabricResult', 'Fill in all fields', 'error'); return;
+  }
+  loading('fabricResult');
+  try {
+    const data = await api('POST', '/api/fabricConfig/' + encodeURIComponent(wsName), {
+      workspace_name: wsName,
+      workspace_id: wsId,
+      database_display_name: dbName,
+      sql_endpoint: sqlEndpoint,
+      table_name: tbl,
+      table_schema: schema,
+    });
+    show('fabricResult', `Saved.\nWorkspace: ${wsName}\nDatabase: ${dbName}\nTable: ${schema}.${tbl}\nSQL endpoint: ${sqlEndpoint}`, 'success');
+    setBadge('fabricBadge', 'configured', 'ok');
+    _fabricConfigured = true;
+    localStorage.setItem('fabric_workspace_name', wsName);
+    localStorage.setItem('manual_wsName', wsName);
+    localStorage.setItem('manual_wsId', wsId);
+    localStorage.setItem('manual_dbName', dbName);
+    localStorage.setItem('manual_sqlEndpoint', sqlEndpoint);
+    localStorage.setItem('manual_table', tbl);
+    localStorage.setItem('manual_schema', schema);
+  } catch (e) {
+    show('fabricResult', 'Error: ' + e.message, 'error');
+    setBadge('fabricBadge', 'error', 'fail');
+  }
+}
+
+async function diagnoseFabric() {
+  const wsName = document.getElementById('manualWsName').value.trim();
+  if (!wsName) { show('fabricResult', 'Fill in the form first', 'error'); return; }
+  loading('fabricResult');
+  try { await fabricSetupManual(); } catch {}
+  try {
+    const d = await api('GET', '/api/fabricDiagnose/' + encodeURIComponent(wsName));
+    const lines = [];
+    lines.push('Token source: ' + d.tokenSource);
+    lines.push('Identity:     ' + (d.identity.upn || d.identity.oid || '?'));
+    lines.push('Audience:     ' + d.identity.aud);
+    lines.push('Token TTL:    ' + (d.identity.expires_in_sec ? d.identity.expires_in_sec + 's' : '?'));
+    lines.push('SQL endpoint: ' + d.sqlEndpoint);
+    lines.push('Configured DB: "' + d.configuredDatabase + '"');
+    lines.push('Configured table: ' + d.configuredSchema + '.' + d.configuredTable);
+    lines.push('');
+    for (const a of d.attempts) {
+      lines.push((a.ok ? '✓ ' : '✗ ') + a.label);
+      if (a.ok && a.rows) lines.push('    -> connected as: ' + a.rows.me + ' on db: ' + a.rows.db);
+      if (!a.ok && a.error) lines.push('    -> ' + a.error.substring(0, 300));
+    }
+    if (d.visibleDatabases) {
+      lines.push('');
+      lines.push('Databases your token can see on this endpoint:');
+      d.visibleDatabases.forEach(n => lines.push('  - ' + n + (n === d.configuredDatabase ? '  <-- matches config' : '')));
+      if (!d.visibleDatabases.includes(d.configuredDatabase)) {
+        lines.push('');
+        lines.push('>>> The configured DB name "' + d.configuredDatabase + '" does NOT appear in the visible list. Update the "Mirrored database name" field above to match one of the names listed.');
+      }
+    } else if (d.visibleDatabasesError) {
+      lines.push('');
+      lines.push('Could not list databases: ' + d.visibleDatabasesError.substring(0, 300));
+    }
+    const allOk = d.attempts.every(a => a.ok);
+    show('fabricResult', lines.join('\n'), allOk ? 'success' : 'error');
+  } catch (e) {
+    show('fabricResult', 'Diagnose failed: ' + e.message, 'error');
+  }
+}
+
+async function testFabricConnection() {
+  const wsName = document.getElementById('manualWsName').value.trim();
+  if (!wsName) { show('fabricResult', 'Fill in the form first', 'error'); return; }
+  loading('fabricResult');
+  // Auto-save current form values so Test always works against the latest input
+  try {
+    await fabricSetupManual();
+  } catch {}
+  try {
+    const r = await api('GET', '/api/fabricColumns/' + encodeURIComponent(wsName));
+    show('fabricResult', `Connection OK. Found ${r.columns.length} columns in ${r.schema}.${r.table}:\n  ` + r.columns.map(c => `${c.name} (${c.type})`).join('\n  '), 'success');
+  } catch (e) {
+    show('fabricResult', 'Connection failed: ' + e.message, 'error');
+  }
+}
+
+// ── Generate / Stop / Failover / Verify ──────────────────────────────────────
+async function generateData() {
+  return generateBatch(
+    parseInt(document.getElementById('batchSize').value),
+    parseInt(document.getElementById('delayMs').value),
+    'generateResult'
+  );
+}
+
+async function generateBatch(batchSize, delayMs, resultId) {
+  loading(resultId);
+  const start = await api('POST', '/api/generateData', { batch_size: batchSize, delay_ms: delayMs });
+  const batchId = start.batchId;
+  _activeBatchId = batchId;
+  show(resultId, `Batch ${batchId} starting (${batchSize} items, ${delayMs}ms delay)…`, 'info');
+  // Poll quickly with no initial delay so user sees activity immediately
+  let lastStatus = null;
+  while (true) {
+    let p;
+    try { p = await api('GET', `/api/batchProgress/${batchId}`); }
+    catch (e) { show(resultId, `Batch ${batchId} — poll error: ${e.message}`, 'error'); await sleep(500); continue; }
+    const pct = Math.floor((p.seq / p.requested) * 100) || 0;
+    const line = `Batch ${batchId} — ${p.succeeded}/${p.requested} inserted (${p.failed} failed) — ${pct}% — write region: ${p.writeRegion}${p.cancelled ? ' [CANCELLED]' : ''}`;
+    show(resultId, line, p.status === 'done' ? (p.failed === 0 && !p.fatalError && !p.cancelled ? 'success' : 'error') : 'info');
+    if (p.status === 'done') return { batchId, ...p };
+    await sleep(300);
+  }
+}
+
+async function stopBatch() {
+  if (!_activeBatchId) { show('generateResult', 'No active batch', 'error'); return; }
+  try {
+    await api('POST', `/api/stopBatch/${_activeBatchId}`);
+  } catch (e) { show('generateResult', 'Error: ' + e.message, 'error'); }
+}
+
+async function triggerFailover() {
+  const region = document.getElementById('targetRegion').value;
+  if (!region) { show('failoverResult', 'Pick a target region', 'error'); return; }
+  loading('failoverResult');
+  try {
+    const data = await api('POST', '/api/failover', { target_region: region });
+    show('failoverResult', JSON.stringify(data, null, 2), 'info');
+  } catch (e) { show('failoverResult', 'Error: ' + e.message, 'error'); }
+}
+
+async function verifyMirror(batchIdOverride) {
+  const batchId = batchIdOverride || document.getElementById('verifyBatchId').value.trim();
+  const ws = localStorage.getItem('fabric_workspace_name');
+  if (!batchId) { show('verifyResult', 'Enter a batch ID', 'error'); return; }
+  if (!ws) { show('verifyResult', 'Save Fabric configuration first', 'error'); return; }
+  loading('verifyResult');
+  try {
+    const data = await api('POST', '/api/verifyMirror', { batch_id: batchId, workspace_name: ws });
+    if (!data.comparison) { show('verifyResult', data.fabric?.error || 'Fabric not configured', 'error'); return data; }
+    const c = data.comparison;
+    const lines = [
+      c.match ? '✓ MATCH — No data loss' : '✗ MISMATCH — Data gaps',
+      '',
+      `Cosmos DB:  ${data.cosmos.count} items (max seq ${data.cosmos.maxSequence})`,
+      `Fabric:     ${data.fabric.count} items (max seq ${data.fabric.maxSequence})`,
+    ];
+    if (!c.match) {
+      lines.push('', `Missing in Fabric: ${c.missingInFabricCount}`);
+      if (c.missingInFabric.length <= 20) lines.push(`  Sequences: ${c.missingInFabric.join(', ')}`);
+    }
+    show('verifyResult', lines.join('\n'), c.match ? 'success' : 'error');
+    return data;
+  } catch (e) { show('verifyResult', 'Error: ' + e.message, 'error'); }
+}
+
+async function resetData() {
+  if (!confirm('Delete ALL items in the container?')) return;
+  try {
+    const d = await api('DELETE', '/api/resetData');
+    alert(`Deleted ${d.deleted} items (${d.errors} errors)`);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// ── View / Count (read back from Cosmos) ─────────────────────────────────────
+async function viewData() {
+  loading('viewResult');
+  try {
+    const c = await api('GET', '/api/countData');
+    const r = await api('GET', '/api/queryData');
+    if (!r.items || r.items.length === 0) {
+      show('viewResult', `Container is empty (count ${c.count}).`, 'info');
+      return;
+    }
+    const preview = r.items.slice(0, 50).map(it => JSON.stringify(it, null, 2)).join('\n\n');
+    const more = r.items.length > 50 ? `\n\n…and ${r.items.length - 50} more not shown.` : '';
+    show('viewResult', `Read ${r.count} item(s) back from Cosmos (count ${c.count}):\n\n${preview}${more}`, 'success');
+  } catch (e) { show('viewResult', 'Error: ' + e.message, 'error'); }
+}
+
+async function countOnly() {
+  loading('viewResult');
+  try {
+    const c = await api('GET', '/api/countData');
+    show('viewResult', `Item count: ${c.count}`, 'info');
+  } catch (e) { show('viewResult', 'Error: ' + e.message, 'error'); }
+}
+
+// ── Run Full Test (the marquee feature) ──────────────────────────────────────
+function step(label, status, detail) {
+  const cls = status; // pending / run / ok / warn / fail
+  const icon = { pending: '·', run: '⟳', ok: '✓', warn: '⚠', fail: '✗' }[status] || '·';
+  return `<div class="step"><span class="step-icon ${cls}">${icon}</span><span class="step-text">${label}${detail ? `<div class="step-detail">${detail}</div>` : ''}</span></div>`;
+}
+
+async function runFullTest() {
+  const items = parseInt(document.getElementById('runItems').value);
+  const delay = parseInt(document.getElementById('runDelay').value);
+  const failoverAt = parseInt(document.getElementById('runFailoverAt').value);
+  const targetRegion = document.getElementById('runRegion').value;
+  const verdictEl = document.getElementById('runVerdict');
+  const stepsEl = document.getElementById('runSteps');
+
+  if (!_fabricConfigured && !localStorage.getItem('fabric_workspace_name')) {
+    verdictEl.innerHTML = '<div class="verdict fail">Fabric not configured — open the Fabric Mirror Setup card and save a configuration first.</div>';
+    return;
+  }
+  if (failoverAt >= items) {
+    verdictEl.innerHTML = '<div class="verdict fail">"Trigger failover after N items" must be less than total items.</div>';
+    return;
+  }
+
+  setBadge('runBadge', 'running', 'run');
+  verdictEl.innerHTML = '<div class="verdict run"><span class="spinner"></span> Running concurrent failover test…</div>';
+  let steps = [
+    [`Start insert loop (${items} items, ${delay}ms apart)`, 'pending'],
+    [`Wait for ${failoverAt} items inserted, then trigger failover to ${targetRegion}`, 'pending'],
+    ['Continue inserts through the failover', 'pending'],
+    ['Wait for all inserts to finish', 'pending'],
+    ['Wait for Fabric mirror to catch up', 'pending'],
+    ['Verify every successful Cosmos insert reached Fabric', 'pending'],
+  ];
+  const render = () => stepsEl.innerHTML = steps.map(s => step(s[0], s[1], s[2])).join('');
+  stepsEl.style.display = 'block'; stepsEl.className = 'result'; render();
+  function set(i, status, detail) { steps[i][1] = status; if (detail) steps[i][2] = detail; render(); }
+
+  const norm = s => (s || '').toLowerCase().replace(/\s+/g, '');
+
+  try {
+    // Step 0: kick off the long batch (fire-and-forget on backend)
+    set(0, 'run');
+    const start = await api('POST', '/api/generateData', { batch_size: items, delay_ms: delay });
+    const batchId = start.batchId;
+    _activeBatchId = batchId;
+    set(0, 'ok', `batch ${batchId} started`);
+
+    // Step 1: poll progress until failoverAt items written, then fire failover (do NOT await its long completion)
+    set(1, 'run');
+    let lastProgress = null;
+    let failoverTriggeredAt = null;
+    let failoverResponse = null;
+    let regionAtTrigger = null;
+    while (true) {
+      lastProgress = await api('GET', `/api/batchProgress/${batchId}`);
+      set(1, 'run', `${lastProgress.succeeded}/${items} written (${lastProgress.failed} failed) — region: ${lastProgress.writeRegion}`);
+      if (lastProgress.succeeded >= failoverAt) break;
+      if (lastProgress.status === 'done') {
+        set(1, 'fail', `batch finished before reaching ${failoverAt} items`);
+        throw new Error('Inserts finished too fast — increase total items or delay');
+      }
+      await sleep(500);
+    }
+    failoverTriggeredAt = lastProgress.succeeded;
+    regionAtTrigger = lastProgress.writeRegion;
+    failoverResponse = await api('POST', '/api/failover', { target_region: targetRegion });
+    set(1, 'ok', `triggered after ${failoverTriggeredAt} items (region was ${regionAtTrigger}) — ${failoverResponse.message || failoverResponse.status}`);
+
+    // Step 2: keep showing progress while inserts continue through the failover
+    set(2, 'run');
+    let regionFlipDetected = false;
+    while (true) {
+      const p = await api('GET', `/api/batchProgress/${batchId}`);
+      const flipNote = (norm(p.writeRegion) === norm(targetRegion)) ? ' [NEW PRIMARY]' : '';
+      if (norm(p.writeRegion) === norm(targetRegion)) regionFlipDetected = true;
+      set(2, 'run', `${p.succeeded}/${items} written (${p.failed} failed) — region: ${p.writeRegion}${flipNote}`);
+      if (p.status === 'done') { lastProgress = p; break; }
+      await sleep(1000);
+    }
+    set(2, 'ok', regionFlipDetected
+      ? `inserts continued; region flipped to ${targetRegion} mid-batch`
+      : `inserts finished but region did not flip during the batch (failover may have completed after last insert)`);
+
+    // Step 3: summarize the batch
+    set(3, 'run');
+    const succeeded = lastProgress.succeeded;
+    const failed = lastProgress.failed;
+    // failed > 0 here is an APPLICATION-LAYER outcome (e.g. SDK request hung past our wrapper timeout).
+    // It is NOT a Mirroring failure. Mirroring is judged separately in step 5.
+    set(3, failed === 0 ? 'ok' : 'warn',
+      `${succeeded}/${items} succeeded, ${failed} failed at the application layer during failover` +
+      (lastProgress.errors && lastProgress.errors.length
+        ? ` — first error: ${(lastProgress.errors[0].error || '').substring(0, 200)}`
+        : ''));
+
+    // Step 4: wait for mirror to catch up
+    set(4, 'run');
+    const ws = localStorage.getItem('fabric_workspace_name');
+    let v = null, mirrorOk = false, lastMsg = '';
+    for (let i = 0; i < 60; i++) {
+      try {
+        v = await api('POST', '/api/verifyMirror', { batch_id: batchId, workspace_name: ws });
+        const cosmosCount = v.cosmos.count;
+        const fabricCount = v.fabric.count;
+        lastMsg = `Cosmos ${cosmosCount} ↔ Fabric ${fabricCount}`;
+        mirrorOk = v.comparison?.match;
+        set(4, 'run', `${lastMsg} — waited ${i*5}s`);
+        if (mirrorOk) break;
+      } catch (e) { lastMsg = 'verify error: ' + e.message; }
+      await sleep(5000);
+    }
+    set(4, mirrorOk ? 'ok' : 'fail', lastMsg);
+
+    // Step 5: final verdict
+    set(5, 'run');
+    const c = v && v.comparison;
+    if (!c) { set(5, 'fail', 'No comparison result'); throw new Error('Verification failed'); }
+    if (c.match) {
+      set(5, 'ok', `${v.cosmos.count} Cosmos items, all present in Fabric`);
+    } else {
+      set(5, 'fail', `MISSING ${c.missingInFabricCount} items in Fabric` +
+        (c.missingInFabric && c.missingInFabric.length <= 20 ? ` (seqs: ${c.missingInFabric.join(', ')})` : ''));
+    }
+
+    // Verdict
+    //
+    // Three distinct outcomes:
+    //   PASS    — every insert succeeded AND every successful insert reached Fabric.
+    //   PARTIAL — some application-layer inserts failed during the failover window,
+    //             BUT every Cosmos-committed insert reached Fabric. This means
+    //             Cosmos Mirroring did its job perfectly; the gap is in the
+    //             *application's* lack of retry/resilience around the failover.
+    //             We deliberately render this as amber (warn), NOT red, so users
+    //             don't mistakenly conclude that Mirroring lost data.
+    //   FAIL    — committed inserts are missing from Fabric (silent data loss).
+    //             This is the only outcome that indicts Mirroring.
+    const insertGap = items - succeeded;
+    if (failed === 0 && c.match) {
+      verdictEl.innerHTML = `<div class="verdict pass">\u2713 PASS \u2014 Failover survived end-to-end. ${succeeded}/${items} writes succeeded across the failover boundary, 0 inserts failed, all data mirrored to Fabric.</div>`;
+      setBadge('runBadge', 'pass', 'ok');
+    } else if (c.match && failed > 0) {
+      verdictEl.innerHTML =
+        `<div class="verdict partial">\u26A0 PARTIAL \u2014 Cosmos Mirroring succeeded. The application lost writes during failover.` +
+        `<div class="verdict-detail">` +
+        `<strong>Cosmos Mirroring: \u2713 PASS</strong> \u2014 every one of the ${succeeded} successfully committed Cosmos writes was replicated to Fabric. No silent data loss.<br>` +
+        `<strong>Application: \u26A0 ${failed} writes failed</strong> during the failover window. The Cosmos SDK did not transparently retry across the failover, and this sample harness has no application-level retry policy. A production app would need to add retry / circuit-breaker logic to survive a planned regional failover without dropping writes. ` +
+        `See the README section "Interpreting PARTIAL" for what this means and how to fix it in your own apps.` +
+        `</div></div>`;
+      setBadge('runBadge', 'partial', 'warn');
+    } else {
+      verdictEl.innerHTML =
+        `<div class="verdict fail">\u2717 FAIL \u2014 Cosmos Mirroring lost data.` +
+        `<div class="verdict-detail">` +
+        `${insertGap} application-layer inserts did not succeed, AND <strong>${c.missingInFabricCount} successfully committed Cosmos writes are missing from Fabric</strong>. ` +
+        `This indicates a Mirroring problem, not just an application-resilience problem. Capture this run and report it.` +
+        `</div></div>`;
+      setBadge('runBadge', 'fail', 'fail');
+    }
+  } catch (e) {
+    verdictEl.innerHTML = `<div class="verdict fail">\u2717 FAIL \u2014 ${e.message}</div>`;
+    setBadge('runBadge', 'fail', 'fail');
+  }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ── Persist simple form fields ───────────────────────────────────────────────
+const persistFields = ['runItems', 'runDelay', 'runFailoverAt', 'batchSize', 'delayMs', 'verifyBatchId', 'fabricSchema'];
+function saveFields() {
+  const data = {};
+  persistFields.forEach(id => { const el = document.getElementById(id); if (el) data[id] = el.value; });
+  localStorage.setItem('harness_fields', JSON.stringify(data));
+}
+function loadFields() {
+  try {
+    const data = JSON.parse(localStorage.getItem('harness_fields') || '{}');
+    persistFields.forEach(id => { const el = document.getElementById(id); if (el && data[id] !== undefined) el.value = data[id]; });
+  } catch {}
+}
+persistFields.forEach(id => { const el = document.getElementById(id); if (el) el.addEventListener('input', saveFields); });
+
+// ── Bootstrap ────────────────────────────────────────────────────────────────
+loadFields();
+loadStatus();
+loadWorkspaces().then(async () => {
+  // If we already have a saved workspace, check if config exists on server
+  const ws = localStorage.getItem('fabric_workspace_name');
+  if (ws) {
+    try {
+      const r = await fetch('/api/fabricConfig/' + encodeURIComponent(ws));
+      if (r.ok) {
+        const d = await r.json();
+        setBadge('fabricBadge', 'configured', 'ok');
+        _fabricConfigured = true;
+        if (d.config.table_schema) document.getElementById('fabricSchema').value = d.config.table_schema;
+      }
+    } catch {}
+  }
+});
+
+// Restore manual-mode preference + saved values
+(function restoreManual() {
+  const mode = localStorage.getItem('fabric_mode');
+  if (mode === 'manual') {
+    document.querySelector('input[name="fabricMode"][value="manual"]').checked = true;
+    switchFabricMode();
+  }
+  const map = {
+    manualWsName: 'manual_wsName', manualWsId: 'manual_wsId', manualDbName: 'manual_dbName',
+    manualSqlEndpoint: 'manual_sqlEndpoint', manualTable: 'manual_table', manualSchema: 'manual_schema',
+  };
+  Object.entries(map).forEach(([id, key]) => {
+    const v = localStorage.getItem(key);
+    const el = document.getElementById(id);
+    if (el && v) el.value = v;
+  });
+})();
+</script>
+</body>
+</html>
