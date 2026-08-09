@@ -147,6 +147,56 @@ resource cmkKey 'Microsoft.KeyVault/vaults/keys@2023-07-01' = if (cmkEnabled) {
 // Versionless key URI enables automatic key-version rotation for Cosmos.
 var cmkKeyUri = cmkEnabled ? '${keyVault.properties.vaultUri}keys/${cmkKeyName}' : ''
 
+// Base subnets: web app (delegated to App Service) + private endpoints.
+var baseSubnets = [
+  {
+    name: webAppSubnetName
+    properties: {
+      addressPrefix: webAppSubnetAddressPrefix
+      delegations: [
+        {
+          name: 'delegation'
+          properties: {
+            serviceName: 'Microsoft.Web/serverFarms'
+          }
+        }
+      ]
+      serviceEndpoints: useVnetRules ? [
+        {
+          service: 'Microsoft.AzureCosmosDB'
+        }
+      ] : []
+      privateEndpointNetworkPolicies: 'Enabled'
+    }
+  }
+  {
+    name: privateEndpointSubnetName
+    properties: {
+      addressPrefix: privateEndpointSubnetAddressPrefix
+      privateEndpointNetworkPolicies: 'Disabled'
+    }
+  }
+]
+
+// Dedicated, empty subnet delegated to Power Platform for the Fabric Virtual Network
+// Data Gateway. Only provisioned when mirroring is enabled — a plain private-link
+// deployment (the state users start from) does NOT include it. Minimum size /27.
+var fabricGatewaySubnet = {
+  name: fabricGatewaySubnetName
+  properties: {
+    addressPrefix: effectiveFabricSubnetAddressPrefix
+    delegations: [
+      {
+        name: 'delegation'
+        properties: {
+          serviceName: 'Microsoft.PowerPlatform/vnetaccesslinks'
+        }
+      }
+    ]
+    privateEndpointNetworkPolicies: 'Disabled'
+  }
+}
+
 // Virtual Network
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
@@ -157,52 +207,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         vnetAddressPrefix
       ]
     }
-    subnets: [
-      {
-        name: webAppSubnetName
-        properties: {
-          addressPrefix: webAppSubnetAddressPrefix
-          delegations: [
-            {
-              name: 'delegation'
-              properties: {
-                serviceName: 'Microsoft.Web/serverFarms'
-              }
-            }
-          ]
-          serviceEndpoints: useVnetRules ? [
-            {
-              service: 'Microsoft.AzureCosmosDB'
-            }
-          ] : []
-          privateEndpointNetworkPolicies: 'Enabled'
-        }
-      }
-      {
-        name: privateEndpointSubnetName
-        properties: {
-          addressPrefix: privateEndpointSubnetAddressPrefix
-          privateEndpointNetworkPolicies: 'Disabled'
-        }
-      }
-      {
-        // Dedicated, empty subnet delegated to Power Platform for the Fabric
-        // Virtual Network Data Gateway used by Cosmos DB mirroring over private link.
-        name: fabricGatewaySubnetName
-        properties: {
-          addressPrefix: effectiveFabricSubnetAddressPrefix
-          delegations: [
-            {
-              name: 'delegation'
-              properties: {
-                serviceName: 'Microsoft.PowerPlatform/vnetaccesslinks'
-              }
-            }
-          ]
-          privateEndpointNetworkPolicies: 'Disabled'
-        }
-      }
-    ]
+    subnets: mirroringEnabled ? concat(baseSubnets, [fabricGatewaySubnet]) : baseSubnets
   }
 }
 

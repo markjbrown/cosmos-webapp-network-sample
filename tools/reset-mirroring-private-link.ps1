@@ -87,23 +87,32 @@ if ($ipCount -gt 0) {
 
 if ($ClearAclBypass) {
     if ($hasBypass) {
+        # The cmdlet's -NetworkAclBypassResourceId rejects an empty array, so set the
+        # mode to None here and clear the (often lingering) resource ids via the
+        # fresh-object patch below.
         Do-Step "Clear trusted-workspace networkAclBypass on $CosmosAccountName" {
-            Update-AzCosmosDBAccount -ResourceGroupName $ResourceGroup -Name $CosmosAccountName -NetworkAclBypass None -NetworkAclBypassResourceId @() | Out-Null
+            Update-AzCosmosDBAccount -ResourceGroupName $ResourceGroup -Name $CosmosAccountName -NetworkAclBypass None | Out-Null
         }
     } else {
         Write-Host "   networkAclBypass already None." -ForegroundColor Gray
     }
 }
 
-if ($RemoveCapability) {
-    if ($hasCapability) {
-        Do-Step "Remove EnableFabricNetworkAclBypass capability on $CosmosAccountName" {
-            $remaining = @($cosmos.Properties.capabilities | Where-Object { $_.name -ne 'EnableFabricNetworkAclBypass' })
-            $cosmos.Properties.capabilities = $remaining
-            $cosmos | Set-AzResource -UsePatchSemantics -Force | Out-Null
+# Capability removal and/or resource-id cleanup share one PATCH. Re-fetch a FRESH
+# resource first so the patch does not resend earlier-cleared state (e.g. IP rules).
+$needCapRemoval = $RemoveCapability -and $hasCapability
+$needIdCleanup = $ClearAclBypass
+if ($needCapRemoval -or $needIdCleanup) {
+    $desc = if ($needCapRemoval) { "Remove EnableFabricNetworkAclBypass capability + clear bypass resource ids" } else { "Clear networkAclBypass resource ids" }
+    Do-Step "$desc on $CosmosAccountName" {
+        $fresh = Get-AzResource -ResourceGroupName $ResourceGroup -Name $CosmosAccountName -ResourceType 'Microsoft.DocumentDB/databaseAccounts'
+        if ($needCapRemoval) {
+            $fresh.Properties.capabilities = @($fresh.Properties.capabilities | Where-Object { $_.name -ne 'EnableFabricNetworkAclBypass' })
         }
-    } else {
-        Write-Host "   Capability not present." -ForegroundColor Gray
+        if ($needIdCleanup) {
+            $fresh.Properties.networkAclBypassResourceIds = @()
+        }
+        $fresh | Set-AzResource -UsePatchSemantics -Force | Out-Null
     }
 }
 

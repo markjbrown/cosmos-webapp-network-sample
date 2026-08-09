@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "5464209046773163593"
+      "templateHash": "1426011181967418413"
     }
   },
   "parameters": {
@@ -216,7 +216,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "9178005419669695992"
+              "templateHash": "6403671858949079028"
             }
           },
           "parameters": {
@@ -369,6 +369,46 @@
             "cmkIdentityName": "[format('id-cmk-{0}', parameters('cosmosAccountName'))]",
             "keyVaultName": "[format('kv-{0}', uniqueString(resourceGroup().id, parameters('cosmosAccountName')))]",
             "cmkKeyName": "cosmos-cmk-key",
+            "baseSubnets": [
+              {
+                "name": "[parameters('webAppSubnetName')]",
+                "properties": {
+                  "addressPrefix": "[parameters('webAppSubnetAddressPrefix')]",
+                  "delegations": [
+                    {
+                      "name": "delegation",
+                      "properties": {
+                        "serviceName": "Microsoft.Web/serverFarms"
+                      }
+                    }
+                  ],
+                  "serviceEndpoints": "[if(variables('useVnetRules'), createArray(createObject('service', 'Microsoft.AzureCosmosDB')), createArray())]",
+                  "privateEndpointNetworkPolicies": "Enabled"
+                }
+              },
+              {
+                "name": "[parameters('privateEndpointSubnetName')]",
+                "properties": {
+                  "addressPrefix": "[parameters('privateEndpointSubnetAddressPrefix')]",
+                  "privateEndpointNetworkPolicies": "Disabled"
+                }
+              }
+            ],
+            "fabricGatewaySubnet": {
+              "name": "[parameters('fabricGatewaySubnetName')]",
+              "properties": {
+                "addressPrefix": "[variables('effectiveFabricSubnetAddressPrefix')]",
+                "delegations": [
+                  {
+                    "name": "delegation",
+                    "properties": {
+                      "serviceName": "Microsoft.PowerPlatform/vnetaccesslinks"
+                    }
+                  }
+                ],
+                "privateEndpointNetworkPolicies": "Disabled"
+              }
+            },
             "cosmosDataContributorRoleId": "00000000-0000-0000-0000-000000000002",
             "cosmosDbOperatorRoleId": "230815da-be43-4aae-9cb4-875f7bd000aa"
           },
@@ -443,46 +483,7 @@
                     "[parameters('vnetAddressPrefix')]"
                   ]
                 },
-                "subnets": [
-                  {
-                    "name": "[parameters('webAppSubnetName')]",
-                    "properties": {
-                      "addressPrefix": "[parameters('webAppSubnetAddressPrefix')]",
-                      "delegations": [
-                        {
-                          "name": "delegation",
-                          "properties": {
-                            "serviceName": "Microsoft.Web/serverFarms"
-                          }
-                        }
-                      ],
-                      "serviceEndpoints": "[if(variables('useVnetRules'), createArray(createObject('service', 'Microsoft.AzureCosmosDB')), createArray())]",
-                      "privateEndpointNetworkPolicies": "Enabled"
-                    }
-                  },
-                  {
-                    "name": "[parameters('privateEndpointSubnetName')]",
-                    "properties": {
-                      "addressPrefix": "[parameters('privateEndpointSubnetAddressPrefix')]",
-                      "privateEndpointNetworkPolicies": "Disabled"
-                    }
-                  },
-                  {
-                    "name": "[parameters('fabricGatewaySubnetName')]",
-                    "properties": {
-                      "addressPrefix": "[variables('effectiveFabricSubnetAddressPrefix')]",
-                      "delegations": [
-                        {
-                          "name": "delegation",
-                          "properties": {
-                            "serviceName": "Microsoft.PowerPlatform/vnetaccesslinks"
-                          }
-                        }
-                      ],
-                      "privateEndpointNetworkPolicies": "Disabled"
-                    }
-                  }
-                ]
+                "subnets": "[if(variables('mirroringEnabled'), concat(variables('baseSubnets'), createArray(variables('fabricGatewaySubnet'))), variables('baseSubnets'))]"
               }
             },
             {

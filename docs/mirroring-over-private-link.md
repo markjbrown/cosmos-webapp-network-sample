@@ -77,10 +77,71 @@ When `FABRIC_WORKSPACE_ID` is set, `infra/resources.bicep` adds, in one deployme
 - `networkAclBypass = AzureServices` + the trusted workspace resource id,
 - a custom **Fabric Mirroring Metadata Reader** role (and, if a principal id is given,
   assigns it plus **Built-in Data Contributor** to the workspace identity),
-- the delegated `snet-fabric` subnet (`Microsoft.PowerPlatform/vnetaccesslinks`).
+- the delegated `snet-fabric` subnet (`Microsoft.PowerPlatform/vnetaccesslinks`, min `/27`).
+  This subnet is only added when `FABRIC_WORKSPACE_ID` is set — a plain private-link
+  deployment does not include it.
 
 > Prefer to keep Bicep untouched? Skip the Fabric params and run the PowerShell script in
-> Step 1 instead — it applies the same Cosmos-side configuration idempotently.
+> Step 1 instead — it applies the same Cosmos-side configuration idempotently. In that case
+> you must create the delegated gateway subnet yourself first — see the next section.
+
+### Step 0b — Create the delegated gateway subnet (manual)
+
+A standard private-link Cosmos deployment has only your **web app** and **private endpoint**
+subnets — it does **not** include a gateway subnet. The Fabric VNet Data Gateway needs its
+own dedicated, delegated subnet, so add one to the VNet that hosts (or peers with) the
+Cosmos private endpoint.
+
+**In the Azure portal:**
+
+Your Cosmos DB account is reachable through an approved **private endpoint** — this is the
+starting point (public network access is *Disabled*):
+
+![Cosmos DB Networking — public network access Disabled](media/private-link-mirroring/01-cosmos-networking-public-access-disabled.png)
+
+![Cosmos DB Networking — Private access shows the approved private endpoint](media/private-link-mirroring/02-cosmos-networking-private-endpoint.png)
+
+1. Open the **Cosmos DB account → Networking** (you're likely already here). On the
+   **Private access** tab, click the private endpoint, then open its **Virtual network** to
+   jump to the VNet. (Or go straight to **Virtual networks → your VNet**.)
+2. Select **Subnets → + Subnet**.
+
+   ![VNet Subnets — the + Subnet button](media/private-link-mirroring/03-vnet-subnets-add.png)
+
+3. Configure the subnet:
+
+   | Setting | Value | Notes |
+   |---|---|---|
+   | **Name** | `snet-fabric` | Any name; dedicated to the gateway |
+   | **Address range** | e.g. `10.x.y.0/27` | **Minimum `/27` (32 IPs)** — smaller is rejected. Must not overlap other subnets |
+   | **Subnet delegation** | `Microsoft.PowerPlatform/vnetaccesslinks` | Required — this is what makes it a gateway subnet |
+   | **Network security group** | None (or your own) | Optional |
+   | **Route table** | None (or your own) | Optional |
+   | **Private endpoint network policies** | Disabled | Recommended |
+
+   ![Add a subnet — name and /27 size](media/private-link-mirroring/04-add-subnet-size-27.png)
+
+   Under **Subnet Delegation → Delegate subnet to a service**, choose
+   `Microsoft.PowerPlatform/vnetaccesslinks`:
+
+   ![Add a subnet — delegation set to Microsoft.PowerPlatform/vnetaccesslinks](media/private-link-mirroring/05-add-subnet-delegation-powerplatform.png)
+
+4. Select **Save** / **Add**.
+
+**IP address range — what's required:**
+
+- **Minimum size: `/27` (32 addresses).** Azure reserves 5 per subnet; the gateway
+  provisions multiple member nodes, so `/27` is the smallest supported. Use a larger range
+  (`/26`, `/25`) only if you plan to scale the gateway to many members.
+- The subnet must be **dedicated** — no other resources (VMs, other private endpoints, etc.)
+  may live in it.
+- It must have **network line-of-sight** to the Cosmos account: same VNet as the private
+  endpoint, or a **peered** VNet with routing, and it must be able to **resolve the Cosmos
+  private DNS** name (`privatelink.documents.azure.com`) to the private IP.
+- Pick a range that does **not** overlap `10.0.1.x` (used internally by the gateway).
+
+> Tip: in this repo's `/24` VNets the gateway subnet defaults to the 5th `/27`
+> (`…​.128/27`), leaving the web app (`.0/27`) and private endpoints (`.32/27`) untouched.
 
 ### Step 1 — Configure Cosmos trust + gateway (PowerShell)
 
