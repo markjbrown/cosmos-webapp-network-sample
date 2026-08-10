@@ -46,7 +46,7 @@ Get your **Fabric workspace ID** now: open the workspace in the Fabric portal an
 GUID from the URL — `.../groups/{workspace-id}/...`. You'll need it in Steps 4 and 5.
 
 > 💡 **Keep one terminal open for the whole walkthrough.** Several steps set shell variables
-> (`$RG`, `$ACCT`, `$WSID`, `$CONN`, …) and later steps reuse them. If you close your PowerShell
+> (`$RESOURCE_GROUP`, `$COSMOS_ACCOUNT`, `$FABRIC_WORKSPACE_ID`, …) and later steps reuse them. If you close your PowerShell
 > or Bash/Cloud Shell session you'll have to re-declare them — use the **same** session from
 > here through Step 7.
 
@@ -145,11 +145,11 @@ data-plane RBAC has no portal control — use the CLI or PowerShell.
 **Azure CLI**
 
 ```bash
-RG="rg-<env>"
-ACCT="cosmos-<env>"
-ME=$(az ad signed-in-user show --query id -o tsv)
+RESOURCE_GROUP="rg-<env>"
+COSMOS_ACCOUNT="cosmos-<env>"
+PRINCIPAL_ID=$(az ad signed-in-user show --query id -o tsv)
 
-az cosmosdb sql role definition create -a "$ACCT" -g "$RG" --body '{
+az cosmosdb sql role definition create -a "$COSMOS_ACCOUNT" -g "$RESOURCE_GROUP" --body '{
   "RoleName": "Fabric Mirroring Metadata Reader",
   "Type": "CustomRole",
   "AssignableScopes": ["/"],
@@ -158,32 +158,32 @@ az cosmosdb sql role definition create -a "$ACCT" -g "$RG" --body '{
     "Microsoft.DocumentDB/databaseAccounts/readAnalytics"
   ]}]
 }'
-ROLE_ID=$(az cosmosdb sql role definition list -a "$ACCT" -g "$RG" \
+ROLE_ID=$(az cosmosdb sql role definition list -a "$COSMOS_ACCOUNT" -g "$RESOURCE_GROUP" \
   --query "[?roleName=='Fabric Mirroring Metadata Reader'].id | [0]" -o tsv)
-az cosmosdb sql role assignment create -a "$ACCT" -g "$RG" --scope "/" \
-  --principal-id "$ME" --role-definition-id "$ROLE_ID"
-az cosmosdb sql role assignment create -a "$ACCT" -g "$RG" --scope "/" \
-  --principal-id "$ME" --role-definition-id 00000000-0000-0000-0000-000000000002
+az cosmosdb sql role assignment create -a "$COSMOS_ACCOUNT" -g "$RESOURCE_GROUP" --scope "/" \
+  --principal-id "$PRINCIPAL_ID" --role-definition-id "$ROLE_ID"
+az cosmosdb sql role assignment create -a "$COSMOS_ACCOUNT" -g "$RESOURCE_GROUP" --scope "/" \
+  --principal-id "$PRINCIPAL_ID" --role-definition-id 00000000-0000-0000-0000-000000000002
 ```
 
 **Azure PowerShell**
 
 ```powershell
-$RG   = "rg-<env>"
-$ACCT = "cosmos-<env>"
-$ME   = (Get-AzADUser -SignedIn).Id
+$RESOURCE_GROUP   = "rg-<env>"
+$COSMOS_ACCOUNT = "cosmos-<env>"
+$PRINCIPAL_ID   = (Get-AzADUser -SignedIn).Id
 
-New-AzCosmosDBSqlRoleDefinition -AccountName $ACCT -ResourceGroupName $RG `
+New-AzCosmosDBSqlRoleDefinition -AccountName $COSMOS_ACCOUNT -ResourceGroupName $RESOURCE_GROUP `
   -Type CustomRole -RoleName "Fabric Mirroring Metadata Reader" -AssignableScope "/" `
   -DataAction @(
     'Microsoft.DocumentDB/databaseAccounts/readMetadata',
     'Microsoft.DocumentDB/databaseAccounts/readAnalytics')
-$roleId = (Get-AzCosmosDBSqlRoleDefinition -AccountName $ACCT -ResourceGroupName $RG |
+$roleId = (Get-AzCosmosDBSqlRoleDefinition -AccountName $COSMOS_ACCOUNT -ResourceGroupName $RESOURCE_GROUP |
   Where-Object RoleName -eq "Fabric Mirroring Metadata Reader").Id
-New-AzCosmosDBSqlRoleAssignment -AccountName $ACCT -ResourceGroupName $RG -Scope "/" `
-  -PrincipalId $ME -RoleDefinitionId $roleId
-New-AzCosmosDBSqlRoleAssignment -AccountName $ACCT -ResourceGroupName $RG -Scope "/" `
-  -PrincipalId $ME -RoleDefinitionName "Cosmos DB Built-in Data Contributor"
+New-AzCosmosDBSqlRoleAssignment -AccountName $COSMOS_ACCOUNT -ResourceGroupName $RESOURCE_GROUP -Scope "/" `
+  -PrincipalId $PRINCIPAL_ID -RoleDefinitionId $roleId
+New-AzCosmosDBSqlRoleAssignment -AccountName $COSMOS_ACCOUNT -ResourceGroupName $RESOURCE_GROUP -Scope "/" `
+  -PrincipalId $PRINCIPAL_ID -RoleDefinitionName "Cosmos DB Built-in Data Contributor"
 ```
 
 ## Step 3 — Add the `EnableFabricNetworkAclBypass` capability
@@ -194,13 +194,13 @@ network ACLs. There's no portal control for it — add it with the CLI or PowerS
 **Azure CLI**
 
 ```bash
-RG="rg-<env>"
-ACCT="cosmos-<env>"
+RESOURCE_GROUP="rg-<env>"
+COSMOS_ACCOUNT="cosmos-<env>"
 
-az cosmosdb update -g "$RG" -n "$ACCT" --capabilities EnableFabricNetworkAclBypass
+az cosmosdb update -g "$RESOURCE_GROUP" -n "$COSMOS_ACCOUNT" --capabilities EnableFabricNetworkAclBypass
 
 # Verify
-az cosmosdb show -g "$RG" -n "$ACCT" --query "capabilities[].name" -o tsv
+az cosmosdb show -g "$RESOURCE_GROUP" -n "$COSMOS_ACCOUNT" --query "capabilities[].name" -o tsv
 ```
 
 > The `--capabilities` flag **replaces** the whole set. If the account already has other
@@ -209,17 +209,17 @@ az cosmosdb show -g "$RG" -n "$ACCT" --query "capabilities[].name" -o tsv
 **Azure PowerShell** (append-safe — preserves existing capabilities)
 
 ```powershell
-$RG   = "rg-<env>"
-$ACCT = "cosmos-<env>"
+$RESOURCE_GROUP   = "rg-<env>"
+$COSMOS_ACCOUNT = "cosmos-<env>"
 
-$c = Get-AzResource -ResourceGroupName $RG -Name $ACCT -ResourceType "Microsoft.DocumentDB/databaseAccounts"
-if ($c.Properties.capabilities.name -notcontains "EnableFabricNetworkAclBypass") {
-    $c.Properties.capabilities += @{ name = "EnableFabricNetworkAclBypass" }
-    $c | Set-AzResource -UsePatchSemantics -Force
+$cosmosAccountResource = Get-AzResource -ResourceGroupName $RESOURCE_GROUP -Name $COSMOS_ACCOUNT -ResourceType "Microsoft.DocumentDB/databaseAccounts"
+if ($cosmosAccountResource.Properties.capabilities.name -notcontains "EnableFabricNetworkAclBypass") {
+    $cosmosAccountResource.Properties.capabilities += @{ name = "EnableFabricNetworkAclBypass" }
+    $cosmosAccountResource | Set-AzResource -UsePatchSemantics -Force
 }
 
 # Verify
-(Get-AzResource -ResourceGroupName $RG -Name $ACCT `
+(Get-AzResource -ResourceGroupName $RESOURCE_GROUP -Name $COSMOS_ACCOUNT `
   -ResourceType "Microsoft.DocumentDB/databaseAccounts").Properties.capabilities.name
 ```
 
@@ -231,26 +231,26 @@ the network ACL bypass. No portal control — use the CLI or PowerShell.
 **Azure CLI**
 
 ```bash
-RG="rg-<env>"
-ACCT="cosmos-<env>"
-WSID="<fabric-workspace-id>"                       # GUID from the Fabric workspace URL
-TENANT=$(az account show --query tenantId -o tsv)
+RESOURCE_GROUP="rg-<env>"
+COSMOS_ACCOUNT="cosmos-<env>"
+FABRIC_WORKSPACE_ID="<fabric-workspace-id>"                       # GUID from the Fabric workspace URL
+TENANT_ID=$(az account show --query tenantId -o tsv)
 
-az cosmosdb update -g "$RG" -n "$ACCT" --network-acl-bypass AzureServices \
+az cosmosdb update -g "$RESOURCE_GROUP" -n "$COSMOS_ACCOUNT" --network-acl-bypass AzureServices \
   --network-acl-bypass-resource-ids \
-  "/tenants/$TENANT/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/Fabric/providers/Microsoft.Fabric/workspaces/$WSID"
+  "/tenants/$TENANT_ID/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/Fabric/providers/Microsoft.Fabric/workspaces/$FABRIC_WORKSPACE_ID"
 ```
 
 **Azure PowerShell**
 
 ```powershell
-$RG    = "rg-<env>"
-$ACCT  = "cosmos-<env>"
-$WSID  = "<fabric-workspace-id>"                   # GUID from the Fabric workspace URL
-$TENANT = (Get-AzContext).Tenant.Id
+$RESOURCE_GROUP    = "rg-<env>"
+$COSMOS_ACCOUNT  = "cosmos-<env>"
+$FABRIC_WORKSPACE_ID  = "<fabric-workspace-id>"                   # GUID from the Fabric workspace URL
+$TENANT_ID = (Get-AzContext).Tenant.Id
 
-Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass AzureServices `
-  -NetworkAclBypassResourceId "/tenants/$TENANT/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/Fabric/providers/Microsoft.Fabric/workspaces/$WSID"
+Update-AzCosmosDBAccount -ResourceGroupName $RESOURCE_GROUP -Name $COSMOS_ACCOUNT -NetworkAclBypass AzureServices `
+  -NetworkAclBypassResourceId "/tenants/$TENANT_ID/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/Fabric/providers/Microsoft.Fabric/workspaces/$FABRIC_WORKSPACE_ID"
 ```
 
 > Azure also surfaces Steps 2–4 in the Cosmos account's **Mirroring in Fabric** blade
@@ -308,66 +308,62 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
 > with the **Fabric REST API**, referencing the connection from Step 6 — this is the one step
 > that can't be done in the portal.
 
-You need your **Fabric workspace ID** and the **connection ID** from Step 6. The connection ID
-is a **GUID** (not the display name) that Fabric's portal doesn't surface, so the scripts below
-resolve it from your **Cosmos endpoint host** (deterministic — no name typos). Run the whole
-block in the terminal you kept open.
+You need your **Fabric workspace ID** and the connection's **GUID** from Step 6. Fabric's portal
+doesn't surface that GUID, so the scripts below resolve it from your **Cosmos endpoint host**
+(deterministic — no connection-name matching). Run the whole block in the terminal you kept open.
 
 ### Azure PowerShell
 
 ```powershell
-$WSID     = "<fabric-workspace-id>"
-$endpoint = "<account-name>.documents.azure.com"   # your Cosmos account host
-$DB       = "CosmosMirrorDatabase"
-$NAME     = "<env>-mirror"
+$FABRIC_WORKSPACE_ID = "<fabric-workspace-id>"
+$COSMOS_ENDPOINT     = "<account-name>.documents.azure.com"   # your Cosmos account host
+$COSMOS_DATABASE     = "CosmosMirrorDatabase"
+$MIRROR_NAME         = "<env>-mirror"
 
-$tok   = Get-AzAccessToken -ResourceUrl 'https://api.fabric.microsoft.com'
-$plain = if ($tok.Token -is [securestring]) { [System.Net.NetworkCredential]::new('', $tok.Token).Password } else { $tok.Token }
-$h     = @{ Authorization = "Bearer $plain"; 'Content-Type' = 'application/json' }
+$fabricToken     = Get-AzAccessToken -ResourceUrl 'https://api.fabric.microsoft.com'
+$fabricTokenText = if ($fabricToken.Token -is [securestring]) { [System.Net.NetworkCredential]::new('', $fabricToken.Token).Password } else { $fabricToken.Token }
+$fabricHeaders   = @{ Authorization = "Bearer $fabricTokenText"; 'Content-Type' = 'application/json' }
 
-# Resolve the connection GUID by the Cosmos endpoint (picks the VNet-gateway connection).
-# To list all your Cosmos connections instead:
-#   (Invoke-RestMethod -Uri 'https://api.fabric.microsoft.com/v1/connections' -Headers $h).value |
-#     Where-Object { $_.connectionDetails.type -eq 'CosmosDB' } | Select displayName, id, connectivityType
-$CONN = ((Invoke-RestMethod -Uri 'https://api.fabric.microsoft.com/v1/connections' -Headers $h).value |
-         Where-Object { $_.connectionDetails.type -eq 'CosmosDB' -and $_.connectivityType -eq 'VirtualNetworkGateway' -and $_.connectionDetails.path -like "*$endpoint*" } |
-         Select-Object -First 1).id
-if (-not $CONN) { throw "No VNet-gateway Cosmos DB v2 connection found for $endpoint. Create it in Step 6 first." }
+# Resolve the connection id (GUID) by the Cosmos endpoint (picks the VNet-gateway connection).
+$CONNECTION_ID = ((Invoke-RestMethod -Uri 'https://api.fabric.microsoft.com/v1/connections' -Headers $fabricHeaders).value |
+                  Where-Object { $_.connectionDetails.type -eq 'CosmosDB' -and $_.connectivityType -eq 'VirtualNetworkGateway' -and $_.connectionDetails.path -like "*$COSMOS_ENDPOINT*" } |
+                  Select-Object -First 1).id
+if (-not $CONNECTION_ID) { throw "No VNet-gateway Cosmos DB v2 connection found for $COSMOS_ENDPOINT. Create it in Step 6 first." }
 
-function B64($o){ [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Depth 20))) }
-$mirroring = @{ properties = @{
-  source = @{ type = 'CosmosDb'; typeProperties = @{ connection = $CONN; database = $DB } }
+function ConvertTo-B64Json($object){ [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($object | ConvertTo-Json -Depth 20))) }
+$mirroringDefinition = @{ properties = @{
+  source = @{ type = 'CosmosDb'; typeProperties = @{ connection = $CONNECTION_ID; database = $COSMOS_DATABASE } }
   target = @{ type = 'MountedRelationalDatabase'; typeProperties = @{ defaultSchema = 'dbo'; format = 'Delta'; retentionInDays = 1; enableDeltaChangeDataFeed = $false } } } }
-$platform = @{ '$schema' = 'https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json'
-  metadata = @{ type = 'MirroredDatabase'; displayName = $NAME }; config = @{ version = '2.0'; logicalId = '00000000-0000-0000-0000-000000000000' } }
-$body = @{ displayName = $NAME; definition = @{ parts = @(
-  @{ path = 'mirroring.json'; payload = (B64 $mirroring); payloadType = 'InlineBase64' }
-  @{ path = '.platform';      payload = (B64 $platform);  payloadType = 'InlineBase64' }) } }
+$platformDefinition = @{ '$schema' = 'https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json'
+  metadata = @{ type = 'MirroredDatabase'; displayName = $MIRROR_NAME }; config = @{ version = '2.0'; logicalId = '00000000-0000-0000-0000-000000000000' } }
+$requestBody = @{ displayName = $MIRROR_NAME; definition = @{ parts = @(
+  @{ path = 'mirroring.json'; payload = (ConvertTo-B64Json $mirroringDefinition); payloadType = 'InlineBase64' }
+  @{ path = '.platform';      payload = (ConvertTo-B64Json $platformDefinition);  payloadType = 'InlineBase64' }) } }
 
-$mirror = Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WSID/mirroredDatabases" -Headers $h -Body ($body | ConvertTo-Json -Depth 20)
-Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WSID/mirroredDatabases/$($mirror.id)/startMirroring" -Headers $h
+$mirroredDatabase = Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases" -Headers $fabricHeaders -Body ($requestBody | ConvertTo-Json -Depth 20)
+Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases/$($mirroredDatabase.id)/startMirroring" -Headers $fabricHeaders
 ```
 
 ### Azure CLI / Bash (Cloud Shell)
 
 ```bash
-WSID="<fabric-workspace-id>"
-ENDPOINT="<account-name>.documents.azure.com"   # your Cosmos account host
-DB="CosmosMirrorDatabase"
-NAME="<env>-mirror"
+FABRIC_WORKSPACE_ID="<fabric-workspace-id>"
+COSMOS_ENDPOINT="<account-name>.documents.azure.com"   # your Cosmos account host
+COSMOS_DATABASE="CosmosMirrorDatabase"
+MIRROR_NAME="<env>-mirror"
 
-TOKEN=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
+FABRIC_TOKEN=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
 
-# Resolve the connection GUID by the Cosmos endpoint (picks the VNet-gateway connection).
-CONN=$(curl -sS "https://api.fabric.microsoft.com/v1/connections" -H "Authorization: Bearer $TOKEN" | jq -r --arg e "$ENDPOINT" 'first(.value[] | select(.connectionDetails.type=="CosmosDB" and .connectivityType=="VirtualNetworkGateway" and (.connectionDetails.path|contains($e))) | .id)')
-[ -n "$CONN" ] || { echo "No VNet-gateway Cosmos DB v2 connection found for $ENDPOINT" >&2; exit 1; }
+# Resolve the connection id (GUID) by the Cosmos endpoint (picks the VNet-gateway connection).
+CONNECTION_ID=$(curl -sS "https://api.fabric.microsoft.com/v1/connections" -H "Authorization: Bearer $FABRIC_TOKEN" | jq -r --arg e "$COSMOS_ENDPOINT" 'first(.value[] | select(.connectionDetails.type=="CosmosDB" and .connectivityType=="VirtualNetworkGateway" and (.connectionDetails.path|contains($e))) | .id)')
+[ -n "$CONNECTION_ID" ] || { echo "No VNet-gateway Cosmos DB v2 connection found for $COSMOS_ENDPOINT" >&2; exit 1; }
 
-MIRRORING=$(jq -cn --arg c "$CONN" --arg d "$DB" '{properties:{source:{type:"CosmosDb",typeProperties:{connection:$c,database:$d}},target:{type:"MountedRelationalDatabase",typeProperties:{defaultSchema:"dbo",format:"Delta",retentionInDays:1,enableDeltaChangeDataFeed:false}}}}' | base64 -w 0)
-PLATFORM=$(jq -cn --arg n "$NAME" '{"$schema":"https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",metadata:{type:"MirroredDatabase",displayName:$n},config:{version:"2.0",logicalId:"00000000-0000-0000-0000-000000000000"}}' | base64 -w 0)
-BODY=$(jq -cn --arg n "$NAME" --arg m "$MIRRORING" --arg p "$PLATFORM" '{displayName:$n,definition:{parts:[{path:"mirroring.json",payload:$m,payloadType:"InlineBase64"},{path:".platform",payload:$p,payloadType:"InlineBase64"}]}}')
+MIRRORING_JSON=$(jq -cn --arg c "$CONNECTION_ID" --arg d "$COSMOS_DATABASE" '{properties:{source:{type:"CosmosDb",typeProperties:{connection:$c,database:$d}},target:{type:"MountedRelationalDatabase",typeProperties:{defaultSchema:"dbo",format:"Delta",retentionInDays:1,enableDeltaChangeDataFeed:false}}}}' | base64 -w 0)
+PLATFORM_JSON=$(jq -cn --arg n "$MIRROR_NAME" '{"$schema":"https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",metadata:{type:"MirroredDatabase",displayName:$n},config:{version:"2.0",logicalId:"00000000-0000-0000-0000-000000000000"}}' | base64 -w 0)
+REQUEST_BODY=$(jq -cn --arg n "$MIRROR_NAME" --arg m "$MIRRORING_JSON" --arg p "$PLATFORM_JSON" '{displayName:$n,definition:{parts:[{path:"mirroring.json",payload:$m,payloadType:"InlineBase64"},{path:".platform",payload:$p,payloadType:"InlineBase64"}]}}')
 
-ID=$(curl -sS -X POST "https://api.fabric.microsoft.com/v1/workspaces/$WSID/mirroredDatabases" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "$BODY" | jq -r '.id')
-curl -sS -X POST "https://api.fabric.microsoft.com/v1/workspaces/$WSID/mirroredDatabases/$ID/startMirroring" -H "Authorization: Bearer $TOKEN"
+MIRRORED_DATABASE_ID=$(curl -sS -X POST "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases" -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" -d "$REQUEST_BODY" | jq -r '.id')
+curl -sS -X POST "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases/$MIRRORED_DATABASE_ID/startMirroring" -H "Authorization: Bearer $FABRIC_TOKEN"
 ```
 
 Both blocks POST the mirrored database definition (a `CosmosDb` source referencing the
@@ -393,8 +389,8 @@ reaching the account through the trusted-workspace bypass over the private gatew
 3. **CLI** (to undo the Steps 3–4 settings):
 
    ```bash
-   az cosmosdb update -g "$RG" -n "$ACCT" --network-acl-bypass None
-   az cosmosdb update -g "$RG" -n "$ACCT" --capabilities ""    # remove EnableFabricNetworkAclBypass
+   az cosmosdb update -g "$RESOURCE_GROUP" -n "$COSMOS_ACCOUNT" --network-acl-bypass None
+   az cosmosdb update -g "$RESOURCE_GROUP" -n "$COSMOS_ACCOUNT" --capabilities ""    # remove EnableFabricNetworkAclBypass
    ```
 
 ## Where each step is done
@@ -434,19 +430,19 @@ required after **March 31, 2026**, when default outbound access is retired). In 
 **Azure CLI**
 
 ```bash
-RG="rg-<env>"; VNET="vnet-<env>"; LOC="<region>"
-az network public-ip create -g "$RG" -n pip-nat-fabric --sku Standard --allocation-method Static -l "$LOC"
-az network nat gateway create  -g "$RG" -n nat-fabric --public-ip-addresses pip-nat-fabric -l "$LOC"
-az network vnet subnet update   -g "$RG" --vnet-name "$VNET" -n snet-fabric --nat-gateway nat-fabric
+RESOURCE_GROUP="rg-<env>"; VNET_NAME="vnet-<env>"; LOCATION="<region>"
+az network public-ip create -g "$RESOURCE_GROUP" -n pip-nat-fabric --sku Standard --allocation-method Static -l "$LOCATION"
+az network nat gateway create  -g "$RESOURCE_GROUP" -n nat-fabric --public-ip-addresses pip-nat-fabric -l "$LOCATION"
+az network vnet subnet update   -g "$RESOURCE_GROUP" --vnet-name "$VNET_NAME" -n snet-fabric --nat-gateway nat-fabric
 ```
 
 **Azure PowerShell**
 
 ```powershell
-$RG = "rg-<env>"; $VNET = "vnet-<env>"; $LOC = "<region>"
-$pip = New-AzPublicIpAddress -ResourceGroupName $RG -Name pip-nat-fabric -Location $LOC -Sku Standard -AllocationMethod Static
-$nat = New-AzNatGateway -ResourceGroupName $RG -Name nat-fabric -Location $LOC -Sku Standard -PublicIpAddress $pip
-$vnetObj = Get-AzVirtualNetwork -ResourceGroupName $RG -Name $VNET
+$RESOURCE_GROUP = "rg-<env>"; $VNET_NAME = "vnet-<env>"; $LOCATION = "<region>"
+$pip = New-AzPublicIpAddress -ResourceGroupName $RESOURCE_GROUP -Name pip-nat-fabric -Location $LOCATION -Sku Standard -AllocationMethod Static
+$nat = New-AzNatGateway -ResourceGroupName $RESOURCE_GROUP -Name nat-fabric -Location $LOCATION -Sku Standard -PublicIpAddress $pip
+$vnetObj = Get-AzVirtualNetwork -ResourceGroupName $RESOURCE_GROUP -Name $VNET_NAME
 ($vnetObj.Subnets | Where-Object Name -eq 'snet-fabric').NatGateway = $nat
 $vnetObj | Set-AzVirtualNetwork
 ```
