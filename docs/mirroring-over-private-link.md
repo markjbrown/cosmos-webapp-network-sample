@@ -312,19 +312,51 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
 > **Gateway cluster name** is what routes the connection through your VNet data gateway to the
 > private endpoint.
 
-## Step 8 — Create the mirrored database
+## Step 8 — Create the mirrored database (Fabric REST API)
 
-1. In your **Fabric workspace**, select **+ New item → Mirrored Azure Cosmos DB** (or
-   **Create → Mirror data → Mirrored Azure Cosmos DB**).
-2. On the **"Choose a database connection to get started"** screen, under **New sources**
-   select **Azure Cosmos DB v2**.
-   > Your gateway-bound connection does **not** appear in the **OneLake catalog** list on this
-   > screen — that list only shows existing OneLake / cloud-connected sources. VNet data gateway
-   > connections are selected through **New sources → Azure Cosmos DB v2**.
-3. On the next screen, select your **existing connection** from Step 7 (the
-   `VirtualNetworkGateway` connection, e.g. `mjb-cosmos-…`). Sign in again if prompted.
-4. Select the **database** (and, optionally, specific containers) to mirror, then **Connect**
-   to start mirroring.
+> The **Mirroring UX cannot use a VNet data gateway connection.** Its **New mirrored Azure
+> Cosmos DB → New source → Azure Cosmos DB v2** flow only creates/lists **cloud** connections
+> (note the *Account key* authentication and that your gateway connection is absent from the
+> **Connection** dropdown). For private-network mirroring you must create the mirrored database
+> with the **Fabric REST API**, referencing the connection from Step 7 — this is the one step
+> that can't be done in the portal.
+
+Use the repo helper (it registers the RP if needed, reuses the gateway, and creates + starts
+the mirror against an existing connection):
+
+```powershell
+./tools/setup-mirroring-private-link.ps1 `
+  -SubscriptionId <sub> -ResourceGroup rg-<env> -CosmosAccountName cosmos-<env> `
+  -VNetName vnet-<env> -FabricWorkspaceId <fabric-workspace-id> `
+  -CosmosDatabaseName CosmosMirrorDatabase -MirrorName <env>-mirror `
+  -ConnectionId <connection-id-from-Step-7>
+```
+
+Or call the REST API directly (PowerShell):
+
+```powershell
+$WS = "<fabric-workspace-id>"; $CONN = "<connection-id-from-Step-7>"
+$DB = "CosmosMirrorDatabase";  $NAME = "<env>-mirror"
+$tok = Get-AzAccessToken -ResourceUrl 'https://api.fabric.microsoft.com'
+$plain = if ($tok.Token -is [System.Security.SecureString]) { [System.Net.NetworkCredential]::new('', $tok.Token).Password } else { $tok.Token }
+$h = @{ Authorization = "Bearer $plain"; 'Content-Type' = 'application/json' }
+function B64($o){ [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Depth 20))) }
+
+$mirroring = @{ properties = @{
+  source = @{ type = 'CosmosDb'; typeProperties = @{ connection = $CONN; database = $DB } }
+  target = @{ type = 'MountedRelationalDatabase'; typeProperties = @{ defaultSchema = 'dbo'; format = 'Delta'; retentionInDays = 1; enableDeltaChangeDataFeed = $false } } } }
+$platform = @{ '$schema' = 'https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json'
+  metadata = @{ type = 'MirroredDatabase'; displayName = $NAME }; config = @{ version = '2.0'; logicalId = '00000000-0000-0000-0000-000000000000' } }
+$body = @{ displayName = $NAME; definition = @{ parts = @(
+  @{ path = 'mirroring.json'; payload = (B64 $mirroring); payloadType = 'InlineBase64' }
+  @{ path = '.platform';      payload = (B64 $platform);  payloadType = 'InlineBase64' }) } }
+
+$mirror = Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WS/mirroredDatabases" -Headers $h -Body ($body | ConvertTo-Json -Depth 20)
+Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WS/mirroredDatabases/$($mirror.id)/startMirroring" -Headers $h
+```
+
+The [`AzureCosmosDB/fabric-cosmos-mirror`](https://github.com/AzureCosmosDB/fabric-cosmos-mirror)
+Python sample does the same thing.
 
 ## Step 9 — Verify
 
@@ -359,7 +391,7 @@ reaching the account through the trusted-workspace bypass over the private gatew
 | Trusted-workspace authorization | Azure CLI / PowerShell |
 | VNet Data Gateway | Fabric portal |
 | Cosmos DB v2 connection (OAuth) | Fabric portal (interactive sign-in) |
-| Mirrored database | Fabric portal |
+| Mirrored database | **Fabric REST API** (the UX can't use a VNet gateway connection) |
 
 > Prefer infrastructure-as-code instead of the manual flow? The repo's `infra/` Bicep and
 > `tools/*.ps1` scripts automate Parts 1 and 2 (except the interactive OAuth connection). They
