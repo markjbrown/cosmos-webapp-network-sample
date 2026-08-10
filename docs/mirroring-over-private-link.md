@@ -259,10 +259,14 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
 
 1. Still under **Manage connections and gateways**, open **Connections → + New**.
 2. **Connection type:** `Azure Cosmos DB v2`. **Connectivity:** **Virtual Network**, and select
-   the **gateway** created in Step 4.
+   the **gateway** created in Step 6.
 3. **Azure Cosmos DB endpoint:** `https://<account-name>.documents.azure.com:443/`
 4. **Authentication kind:** **OAuth 2.0** (Organizational account) → sign in.
-5. Select **Test connection**, then **Create**.
+5. **Enable** *"Allow this connection to be utilized with either on-premises data gateways or
+   VNet data gateways."* This is **required** — it lets the OAuth connection route through your
+   VNet data gateway to reach the private endpoint. Left unchecked, the connection is
+   cloud-only and can't reach the private-network account, so mirroring will fail.
+6. Select **Test connection**, then **Create**.
 
 > Private-network mirroring supports **OAuth-based authentication only**. This is the one step
 > that always requires an interactive sign-in.
