@@ -258,15 +258,18 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
 ## Step 7 — Create the Azure Cosmos DB v2 connection (OAuth)
 
 1. Still under **Manage connections and gateways**, open **Connections → + New**.
-2. **Connection type:** `Azure Cosmos DB v2`. **Connectivity:** **Virtual Network**, and select
-   the **gateway** created in Step 6.
-3. **Azure Cosmos DB endpoint:** `https://<account-name>.documents.azure.com:443/`
-4. **Authentication kind:** **OAuth 2.0** (Organizational account) → sign in.
-5. **Enable** *"Allow this connection to be utilized with either on-premises data gateways or
-   VNet data gateways."* This is **required** — it lets the OAuth connection route through your
-   VNet data gateway to reach the private endpoint. Left unchecked, the connection is
-   cloud-only and can't reach the private-network account, so mirroring will fail.
-6. Select **Test connection**, then **Create**.
+2. Leave the connection type as **Cloud** (the default tile).
+3. **Connection name:** a name (for example, `mjb-cosmos-private-link`).
+   **Connection type:** `Azure Cosmos DB v2`.
+4. **Cosmos DB Endpoint:** `https://<account-name>.documents.azure.com:443/`
+5. **Authentication method:** **OAuth 2.0** → select **Edit credentials** and sign in.
+6. **Check** *"Allow this connection to be utilized with either on-premises data gateways or
+   VNet data gateways."* This is **required** — it lets the OAuth cloud connection route
+   through your VNet data gateway to reach the private endpoint. Left unchecked, the
+   connection is cloud-only and can't reach the private-network account, so mirroring fails.
+7. Select **Create**.
+
+![Fabric — New connection dialog for Azure Cosmos DB v2 with the VNet data gateways checkbox enabled](media/private-link-mirroring/10-fabric-new-connection-cosmos-v2.png)
 
 > Private-network mirroring supports **OAuth-based authentication only**. This is the one step
 > that always requires an interactive sign-in.
