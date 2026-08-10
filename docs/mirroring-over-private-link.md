@@ -101,15 +101,20 @@ Your account is reachable through an approved **private endpoint** (public acces
    |---|---|---|
    | **Name** | `snet-fabric` | Any name; dedicated to the gateway |
    | **Size / address range** | `/27` (32 IPs) | **Minimum `/27`** — smaller is rejected. Must not overlap other subnets |
+   | **Enable private subnet (no default outbound access)** | **Unchecked** | Leave this **unchecked** so the subnet keeps default outbound access to Azure AD — required for the Step 7 OAuth sign-in |
    | **Subnet delegation** | `Microsoft.PowerPlatform/vnetaccesslinks` | Required — this is what makes it a gateway subnet |
    | **Private endpoint network policies** | Disabled | Recommended |
 
-   ![Add a subnet — name and /27 size](media/private-link-mirroring/04-add-subnet-size-27.png)
+   ![Add a subnet — name, /27 size, and "Enable private subnet (no default outbound access)" unchecked](media/private-link-mirroring/04-add-subnet-size-27.png)
+
+   > **Leave "Enable private subnet (no default outbound access)" *unchecked*** (as shown
+   > above). This keeps default outbound access so the gateway can reach Azure AD for the
+   > Step 7 OAuth sign-in. See the outbound note below.
 
    Under **Subnet Delegation → Delegate subnet to a service**, choose
-   `Microsoft.PowerPlatform/vnetaccesslinks`:
+   `Microsoft.PowerPlatform/vnetaccesslinks` (note the private-subnet box remains unchecked):
 
-   ![Add a subnet — delegation set to Microsoft.PowerPlatform/vnetaccesslinks](media/private-link-mirroring/05-add-subnet-delegation-powerplatform.png)
+   ![Add a subnet — delegation set to Microsoft.PowerPlatform/vnetaccesslinks, private subnet unchecked](media/private-link-mirroring/05-add-subnet-delegation-powerplatform.png)
 
 4. Select **Add**.
 
@@ -118,23 +123,26 @@ Your account is reachable through an approved **private endpoint** (public acces
 endpoint, or a peered VNet with routing) and resolve the Cosmos private DNS
 (`privatelink.documents.azure.com`); avoid overlapping `10.0.1.x`.
 
-> ### ⚠️ Outbound internet access is required on this subnet
+> ### ⚠️ The subnet needs outbound access to Azure AD
 > The VNet data gateway must reach **Azure AD (`login.microsoftonline.com`)** to complete the
-> OAuth sign-in in **Step 7**. The Add-subnet blade checks **"Enable private subnet (no default
-> outbound access)"** by default, which **blocks** that. Give the subnet outbound internet —
-> attach a **NAT gateway** (recommended):
+> OAuth sign-in in **Step 7**. Make sure the subnet has outbound internet:
 >
-> **Azure portal:** create a **NAT gateway** (with a new **Standard public IP**) in the same
-> region, and on its **Subnets** tab associate it with `snet-fabric`. (Or: **Virtual network →
-> Subnets → snet-fabric → NAT gateway**.)
+> - **Simplest (shown above):** leave **"Enable private subnet (no default outbound access)"**
+>   **unchecked** — the subnet then keeps default outbound access.
+> - **Recommended for the long term:** attach a **NAT gateway** — default outbound access is
+>   scheduled to be retired after **March 31, 2026**, after which a NAT gateway (or other
+>   explicit egress) is required:
 >
-> **Azure CLI:**
-> ```bash
-> RG="rg-<env>"; VNET="vnet-<env>"; LOC="<region>"
-> az network public-ip create -g "$RG" -n pip-nat-fabric --sku Standard --allocation-method Static -l "$LOC"
-> az network nat gateway create  -g "$RG" -n nat-fabric --public-ip-addresses pip-nat-fabric -l "$LOC"
-> az network vnet subnet update   -g "$RG" --vnet-name "$VNET" -n snet-fabric --nat-gateway nat-fabric
-> ```
+>   **Azure portal:** create a **NAT gateway** (with a new **Standard public IP**) in the same
+>   region, and on its **Subnets** tab associate it with `snet-fabric`.
+>
+>   **Azure CLI:**
+>   ```bash
+>   RG="rg-<env>"; VNET="vnet-<env>"; LOC="<region>"
+>   az network public-ip create -g "$RG" -n pip-nat-fabric --sku Standard --allocation-method Static -l "$LOC"
+>   az network nat gateway create  -g "$RG" -n nat-fabric --public-ip-addresses pip-nat-fabric -l "$LOC"
+>   az network vnet subnet update   -g "$RG" --vnet-name "$VNET" -n snet-fabric --nat-gateway nat-fabric
+>   ```
 >
 > Without outbound access, creating the Cosmos DB v2 connection in Step 7 fails with:
 > *"OAuth login through the data gateway was unsuccessful … The service returned an invalid
