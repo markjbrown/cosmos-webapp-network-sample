@@ -13,6 +13,14 @@ Cosmos privately, plus a trusted-workspace **network ACL bypass**.
 > authorization, and data-plane RBAC) don't have a portal control, so **Step 3** provides the
 > bare **Azure CLI** / **Azure PowerShell** commands for them.
 
+> ### ⛔ Known limitation — the mirror can't be finished in the portal
+> The **Mirroring UX cannot use a VNet data gateway connection.** *New mirrored Azure Cosmos DB
+> → New source → Azure Cosmos DB v2* only offers **cloud** connections (Account key / OAuth
+> without a gateway), so the VNet gateway connection created in **Step 7** is **not selectable**
+> there. As a result, a private-network mirrored database **must be created via the Fabric REST
+> API** (**Step 8**). This is a current product gap in the Fabric Mirroring experience, not a
+> configuration mistake.
+
 ## Why this approach
 
 | | IP-allowlist approach ([Learn doc](https://learn.microsoft.com/fabric/mirroring/azure-cosmos-db-private-network)) | **VNet Data Gateway approach (this guide)** |
