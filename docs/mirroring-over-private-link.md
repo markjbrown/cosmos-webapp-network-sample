@@ -308,11 +308,21 @@ Update-AzCosmosDBAccount -ResourceGroupName $RESOURCE_GROUP -Name $COSMOS_ACCOUN
 > with the **Fabric REST API**, referencing the connection from Step 6 — this is the one step
 > that can't be done in the portal.
 
-The API needs the connection's **GUID** (it rejects the display name). Fabric's portal doesn't
-surface that GUID, so the scripts below resolve it from your **Cosmos endpoint** (they normalize
-to the host, so pasting either `account.documents.azure.com` or the full
-`https://account.documents.azure.com:443/` works), then create the mirror — which starts
-automatically. Run the whole block in the terminal you kept open.
+Creating a mirrored database over the REST API is a three-part sequence:
+
+1. **Resolve the connection GUID.** The API rejects the display name, and Fabric's portal
+   doesn't surface the GUID, so the scripts resolve it from your **Cosmos endpoint**. They
+   normalize to the host, so either `account.documents.azure.com` or the full
+   `https://account.documents.azure.com:443/` works.
+2. **Create the item with a definition.** The mirrored database must be created with a
+   `definition` containing two base64-encoded parts — `mirroring.json` (the source/target
+   properties) and `.platform` (the item metadata). Posting top-level `properties` instead
+   creates an empty shell whose **Source** and **Source connection** show blank in Fabric and
+   that never starts. The UX builds these parts for you for cloud connections; over REST you
+   supply them yourself.
+3. **Start mirroring.** Call `startMirroring` on the new item to begin replication.
+
+Run the whole block in the terminal you kept open.
 
 ### Azure PowerShell
 
@@ -326,22 +336,42 @@ $fabricToken     = Get-AzAccessToken -ResourceUrl 'https://api.fabric.microsoft.
 $fabricTokenText = if ($fabricToken.Token -is [securestring]) { [Net.NetworkCredential]::new('', $fabricToken.Token).Password } else { $fabricToken.Token }
 $fabricHeaders   = @{ Authorization = "Bearer $fabricTokenText"; 'Content-Type' = 'application/json' }
 
-# Resolve the connection id (GUID) by the Cosmos host (the VNet-gateway connection)
+# 1. Resolve the connection id (GUID) by the Cosmos host (the VNet-gateway connection)
 $cosmosHost    = $COSMOS_ENDPOINT -replace '^https?://','' -replace '[:/].*$',''
 $CONNECTION_ID = ((Invoke-RestMethod -Uri 'https://api.fabric.microsoft.com/v1/connections' -Headers $fabricHeaders).value |
                   Where-Object { $_.connectionDetails.type -eq 'CosmosDB' -and $_.connectivityType -eq 'VirtualNetworkGateway' -and $_.connectionDetails.path -like "*$cosmosHost*" } |
                   Select-Object -First 1).id
 
-# Create the mirrored database (mirroring starts automatically)
-$requestBody = @{
-  displayName = $MIRROR_NAME
-  properties  = @{
+# 2. Build the definition: mirroring.json (source/target) + .platform (item metadata)
+$mirroringJson = @{
+  properties = @{
     source = @{ type = 'CosmosDb'; typeProperties = @{ connection = $CONNECTION_ID; database = $COSMOS_DATABASE } }
     target = @{ type = 'MountedRelationalDatabase'; typeProperties = @{ defaultSchema = 'dbo'; format = 'Delta' } }
   }
 } | ConvertTo-Json -Depth 20
+$platformJson = @{
+  '$schema' = 'https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json'
+  metadata  = @{ type = 'MirroredDatabase'; displayName = $MIRROR_NAME }
+  config    = @{ version = '2.0'; logicalId = '00000000-0000-0000-0000-000000000000' }
+} | ConvertTo-Json -Depth 20
+$toBase64 = { param($text) [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text)) }
 
-Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases" -Headers $fabricHeaders -Body $requestBody
+$requestBody = @{
+  displayName = $MIRROR_NAME
+  definition  = @{
+    parts = @(
+      @{ path = 'mirroring.json'; payload = (& $toBase64 $mirroringJson); payloadType = 'InlineBase64' },
+      @{ path = '.platform';      payload = (& $toBase64 $platformJson);  payloadType = 'InlineBase64' }
+    )
+  }
+} | ConvertTo-Json -Depth 20
+
+# 3. Create the mirrored database, then start replication
+Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases" -Headers $fabricHeaders -Body $requestBody | Out-Null
+Start-Sleep -Seconds 5
+$MIRROR_ID = ((Invoke-RestMethod -Uri "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases" -Headers $fabricHeaders).value |
+              Where-Object displayName -eq $MIRROR_NAME | Select-Object -First 1).id
+Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases/$MIRROR_ID/startMirroring" -Headers $fabricHeaders
 ```
 
 ### Azure CLI / Bash (Cloud Shell)
@@ -354,17 +384,25 @@ MIRROR_NAME="<env>-mirror"
 
 FABRIC_TOKEN=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
 
-# Resolve the connection id (GUID) by the Cosmos host (the VNet-gateway connection)
+# 1. Resolve the connection id (GUID) by the Cosmos host (the VNet-gateway connection)
 COSMOS_HOST=${COSMOS_ENDPOINT#*://}; COSMOS_HOST=${COSMOS_HOST%%[:/]*}
 CONNECTION_ID=$(curl -sS "https://api.fabric.microsoft.com/v1/connections" -H "Authorization: Bearer $FABRIC_TOKEN" | jq -r --arg e "$COSMOS_HOST" 'first(.value[] | select(.connectionDetails.type=="CosmosDB" and .connectivityType=="VirtualNetworkGateway" and (.connectionDetails.path|contains($e))) | .id)')
 
-# Create the mirrored database (mirroring starts automatically)
-REQUEST_BODY=$(jq -cn --arg n "$MIRROR_NAME" --arg c "$CONNECTION_ID" --arg d "$COSMOS_DATABASE" '{displayName:$n,properties:{source:{type:"CosmosDb",typeProperties:{connection:$c,database:$d}},target:{type:"MountedRelationalDatabase",typeProperties:{defaultSchema:"dbo",format:"Delta"}}}}')
+# 2. Build the definition parts (base64): mirroring.json (source/target) + .platform (metadata)
+MIRRORING_B64=$(jq -cn --arg c "$CONNECTION_ID" --arg d "$COSMOS_DATABASE" '{properties:{source:{type:"CosmosDb",typeProperties:{connection:$c,database:$d}},target:{type:"MountedRelationalDatabase",typeProperties:{defaultSchema:"dbo",format:"Delta"}}}}' | base64 -w0)
+PLATFORM_B64=$(jq -cn --arg n "$MIRROR_NAME" '{"$schema":"https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",metadata:{type:"MirroredDatabase",displayName:$n},config:{version:"2.0",logicalId:"00000000-0000-0000-0000-000000000000"}}' | base64 -w0)
+REQUEST_BODY=$(jq -cn --arg n "$MIRROR_NAME" --arg m "$MIRRORING_B64" --arg p "$PLATFORM_B64" '{displayName:$n,definition:{parts:[{path:"mirroring.json",payload:$m,payloadType:"InlineBase64"},{path:".platform",payload:$p,payloadType:"InlineBase64"}]}}')
+
+# 3. Create the mirrored database, then start replication
 curl -sS -X POST "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases" -H "Authorization: Bearer $FABRIC_TOKEN" -H "Content-Type: application/json" -d "$REQUEST_BODY"
+sleep 5
+MIRROR_ID=$(curl -sS "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases" -H "Authorization: Bearer $FABRIC_TOKEN" | jq -r --arg n "$MIRROR_NAME" 'first(.value[] | select(.displayName==$n) | .id)')
+curl -sS -X POST "https://api.fabric.microsoft.com/v1/workspaces/$FABRIC_WORKSPACE_ID/mirroredDatabases/$MIRROR_ID/startMirroring" -H "Authorization: Bearer $FABRIC_TOKEN"
 ```
 
 The [`AzureCosmosDB/fabric-cosmos-mirror`](https://github.com/AzureCosmosDB/fabric-cosmos-mirror)
 Python sample does the same thing.
+
 
 
 ## Step 8 — Verify
