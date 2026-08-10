@@ -123,30 +123,36 @@ Your account is reachable through an approved **private endpoint** (public acces
 endpoint, or a peered VNet with routing) and resolve the Cosmos private DNS
 (`privatelink.documents.azure.com`); avoid overlapping `10.0.1.x`.
 
-> ### ⚠️ The subnet needs outbound access to Azure AD
-> The VNet data gateway must reach **Azure AD (`login.microsoftonline.com`)** to complete the
-> OAuth sign-in in **Step 7**. Make sure the subnet has outbound internet:
+> **Why leave it unchecked?** The VNet data gateway must reach **Azure AD
+> (`login.microsoftonline.com`)** to complete the OAuth sign-in in **Step 7**. Leaving
+> **"Enable private subnet (no default outbound access)"** unchecked keeps the default outbound
+> access the gateway needs.
+
+> ### 🔧 Troubleshooting — "invalid token" when creating the connection (Step 7)
+> If Step 7 fails with *"OAuth login through the data gateway was unsuccessful … The service
+> returned an invalid token,"* the gateway subnet has **no outbound path to Azure AD** — usually
+> because **"Enable private subnet (no default outbound access)"** was left **checked**. Attach a
+> **NAT gateway** to the subnet to fix it (this also becomes required after **March 31, 2026**,
+> when default outbound access is retired). Use the portal (**Virtual network → Subnets →
+> snet-fabric → NAT gateway**), or:
 >
-> - **Simplest (shown above):** leave **"Enable private subnet (no default outbound access)"**
->   **unchecked** — the subnet then keeps default outbound access.
-> - **Recommended for the long term:** attach a **NAT gateway** — default outbound access is
->   scheduled to be retired after **March 31, 2026**, after which a NAT gateway (or other
->   explicit egress) is required:
+> **Azure CLI:**
+> ```bash
+> RG="rg-<env>"; VNET="vnet-<env>"; LOC="<region>"
+> az network public-ip create -g "$RG" -n pip-nat-fabric --sku Standard --allocation-method Static -l "$LOC"
+> az network nat gateway create  -g "$RG" -n nat-fabric --public-ip-addresses pip-nat-fabric -l "$LOC"
+> az network vnet subnet update   -g "$RG" --vnet-name "$VNET" -n snet-fabric --nat-gateway nat-fabric
+> ```
 >
->   **Azure portal:** create a **NAT gateway** (with a new **Standard public IP**) in the same
->   region, and on its **Subnets** tab associate it with `snet-fabric`.
->
->   **Azure CLI:**
->   ```bash
->   RG="rg-<env>"; VNET="vnet-<env>"; LOC="<region>"
->   az network public-ip create -g "$RG" -n pip-nat-fabric --sku Standard --allocation-method Static -l "$LOC"
->   az network nat gateway create  -g "$RG" -n nat-fabric --public-ip-addresses pip-nat-fabric -l "$LOC"
->   az network vnet subnet update   -g "$RG" --vnet-name "$VNET" -n snet-fabric --nat-gateway nat-fabric
->   ```
->
-> Without outbound access, creating the Cosmos DB v2 connection in Step 7 fails with:
-> *"OAuth login through the data gateway was unsuccessful … The service returned an invalid
-> token."*
+> **Azure PowerShell:**
+> ```powershell
+> $RG = "rg-<env>"; $VNET = "vnet-<env>"; $LOC = "<region>"
+> $pip = New-AzPublicIpAddress -ResourceGroupName $RG -Name pip-nat-fabric -Location $LOC -Sku Standard -AllocationMethod Static
+> $nat = New-AzNatGateway -ResourceGroupName $RG -Name nat-fabric -Location $LOC -Sku Standard -PublicIpAddress $pip
+> $vnetObj = Get-AzVirtualNetwork -ResourceGroupName $RG -Name $VNET
+> ($vnetObj.Subnets | Where-Object Name -eq 'snet-fabric').NatGateway = $nat
+> $vnetObj | Set-AzVirtualNetwork
+> ```
 
 ## Step 3 — Grant Cosmos data-plane RBAC
 
