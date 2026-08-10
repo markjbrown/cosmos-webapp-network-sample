@@ -1,0 +1,907 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "1426011181967418413"
+    }
+  },
+  "parameters": {
+    "environmentName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "metadata": {
+        "description": "Name of the environment that can be used as part of naming resource convention"
+      }
+    },
+    "location": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Primary location for all resources"
+      }
+    },
+    "owner": {
+      "type": "string",
+      "defaultValue": "defaultuser@example.com",
+      "metadata": {
+        "description": "Owner tag for resource tagging"
+      }
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "VNet address prefix - 10.5.0.0/24 = 256 total IP addresses. Empty string = use default 172.21.1.0/24."
+      }
+    },
+    "webAppSubnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Web App subnet address prefix. 10.5.0.0/27 = 32 IPs (10.5.0.0 - 10.5.0.31). Empty string = use default 172.21.1.0/27."
+      }
+    },
+    "privateEndpointSubnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Private Endpoint subnet address prefix 10.5.0.32/27 = 32 IPs (10.5.0.32 - 10.5.0.63). Empty string = use default 172.21.1.32/27."
+      }
+    },
+    "cosmosNetworkMode": {
+      "type": "string",
+      "defaultValue": "privateEndpoint",
+      "allowedValues": [
+        "privateEndpoint",
+        "vnetRules"
+      ],
+      "metadata": {
+        "description": "How the Web App connects to Cosmos DB: privateEndpoint (Private Link) or vnetRules (Service Endpoint + VNet firewall rules, no Private Endpoint)."
+      }
+    },
+    "secondaryLocation": {
+      "type": "string",
+      "defaultValue": "australiasoutheast",
+      "metadata": {
+        "description": "Secondary location for Cosmos DB replication"
+      }
+    },
+    "enableCmk": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Enable customer-managed keys (CMK) for the Cosmos DB account. Set to \"true\" to provision a Key Vault + user-assigned identity + key and encrypt Cosmos with it. Empty or any other value = Microsoft-managed keys (default)."
+      }
+    },
+    "fabricWorkspaceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Fabric workspace ID (GUID) to authorize as a trusted workspace for mirroring. Empty = do not configure mirroring network ACL bypass."
+      }
+    },
+    "fabricTenantId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Fabric tenant ID (GUID) for the trusted workspace resource id. Empty = use the deployment subscription tenant."
+      }
+    },
+    "fabricWorkspacePrincipalId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Object (principal) ID of the Fabric workspace identity to grant Cosmos mirroring RBAC. Empty = skip the role assignment (grant it later via script)."
+      }
+    },
+    "fabricSubnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Address prefix for the delegated Fabric VNet Data Gateway subnet (Microsoft.PowerPlatform/vnetaccesslinks). Empty = auto-compute the 5th /27 of the VNet."
+      }
+    }
+  },
+  "variables": {
+    "tags": {
+      "azd-env-name": "[parameters('environmentName')]",
+      "owner": "[parameters('owner')]"
+    },
+    "cosmosDatabaseName": "CosmosMirrorDatabase",
+    "cosmosContainerName": "Items",
+    "cosmosContainerMaxThroughput": 1000,
+    "resourceGroupName": "[format('rg-{0}', parameters('environmentName'))]",
+    "cosmosAccountName": "[format('cosmos-{0}', parameters('environmentName'))]",
+    "webAppName": "[format('app-{0}', parameters('environmentName'))]",
+    "vnetName": "[format('vnet-{0}', parameters('environmentName'))]",
+    "webAppSubnetName": "snet-webapp",
+    "privateEndpointSubnetName": "snet-privateendpoints",
+    "fabricGatewaySubnetName": "snet-fabric",
+    "appServicePlanName": "[format('asp-{0}', variables('webAppName'))]",
+    "effectiveVnetAddressPrefix": "[if(empty(parameters('vnetAddressPrefix')), '172.21.1.0/24', parameters('vnetAddressPrefix'))]",
+    "effectiveWebAppSubnetAddressPrefix": "[if(empty(parameters('webAppSubnetAddressPrefix')), '172.21.1.0/27', parameters('webAppSubnetAddressPrefix'))]",
+    "effectivePrivateEndpointSubnetAddressPrefix": "[if(empty(parameters('privateEndpointSubnetAddressPrefix')), '172.21.1.32/27', parameters('privateEndpointSubnetAddressPrefix'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('resourceGroupName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "resources-deployment",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "vnetName": {
+            "value": "[variables('vnetName')]"
+          },
+          "vnetAddressPrefix": {
+            "value": "[variables('effectiveVnetAddressPrefix')]"
+          },
+          "webAppSubnetName": {
+            "value": "[variables('webAppSubnetName')]"
+          },
+          "webAppSubnetAddressPrefix": {
+            "value": "[variables('effectiveWebAppSubnetAddressPrefix')]"
+          },
+          "privateEndpointSubnetName": {
+            "value": "[variables('privateEndpointSubnetName')]"
+          },
+          "privateEndpointSubnetAddressPrefix": {
+            "value": "[variables('effectivePrivateEndpointSubnetAddressPrefix')]"
+          },
+          "fabricGatewaySubnetName": {
+            "value": "[variables('fabricGatewaySubnetName')]"
+          },
+          "fabricSubnetAddressPrefix": {
+            "value": "[parameters('fabricSubnetAddressPrefix')]"
+          },
+          "fabricWorkspaceId": {
+            "value": "[parameters('fabricWorkspaceId')]"
+          },
+          "fabricTenantId": {
+            "value": "[parameters('fabricTenantId')]"
+          },
+          "fabricWorkspacePrincipalId": {
+            "value": "[parameters('fabricWorkspacePrincipalId')]"
+          },
+          "cosmosNetworkMode": {
+            "value": "[parameters('cosmosNetworkMode')]"
+          },
+          "cosmosAccountName": {
+            "value": "[variables('cosmosAccountName')]"
+          },
+          "cosmosDatabaseName": {
+            "value": "[variables('cosmosDatabaseName')]"
+          },
+          "cosmosContainerName": {
+            "value": "[variables('cosmosContainerName')]"
+          },
+          "cosmosContainerMaxThroughput": {
+            "value": "[variables('cosmosContainerMaxThroughput')]"
+          },
+          "secondaryLocation": {
+            "value": "[parameters('secondaryLocation')]"
+          },
+          "webAppName": {
+            "value": "[variables('webAppName')]"
+          },
+          "appServicePlanName": {
+            "value": "[variables('appServicePlanName')]"
+          },
+          "enableCmk": {
+            "value": "[parameters('enableCmk')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "6403671858949079028"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Primary location for all resources"
+              }
+            },
+            "vnetName": {
+              "type": "string",
+              "metadata": {
+                "description": "VNet name"
+              }
+            },
+            "vnetAddressPrefix": {
+              "type": "string",
+              "metadata": {
+                "description": "VNet address prefix"
+              }
+            },
+            "webAppSubnetName": {
+              "type": "string",
+              "metadata": {
+                "description": "Web App subnet name"
+              }
+            },
+            "webAppSubnetAddressPrefix": {
+              "type": "string",
+              "metadata": {
+                "description": "Web App subnet address prefix"
+              }
+            },
+            "privateEndpointSubnetName": {
+              "type": "string",
+              "metadata": {
+                "description": "Private Endpoint subnet name"
+              }
+            },
+            "privateEndpointSubnetAddressPrefix": {
+              "type": "string",
+              "metadata": {
+                "description": "Private Endpoint subnet address prefix"
+              }
+            },
+            "fabricGatewaySubnetName": {
+              "type": "string",
+              "defaultValue": "snet-fabric",
+              "metadata": {
+                "description": "Fabric VNet Data Gateway subnet name"
+              }
+            },
+            "fabricSubnetAddressPrefix": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Fabric VNet Data Gateway subnet address prefix. Empty = auto-compute the 5th /27 of the VNet."
+              }
+            },
+            "fabricWorkspaceId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Fabric workspace ID (GUID) to authorize as a trusted workspace. Empty = do not configure mirroring network ACL bypass."
+              }
+            },
+            "fabricTenantId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Fabric tenant ID (GUID). Empty = use the deployment subscription tenant."
+              }
+            },
+            "fabricWorkspacePrincipalId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Object (principal) ID of the Fabric workspace identity to grant Cosmos mirroring RBAC. Empty = skip the assignment."
+              }
+            },
+            "cosmosNetworkMode": {
+              "type": "string",
+              "defaultValue": "privateEndpoint",
+              "allowedValues": [
+                "privateEndpoint",
+                "vnetRules"
+              ],
+              "metadata": {
+                "description": "How the Web App connects to Cosmos DB: privateEndpoint (Private Link) or vnetRules (Service Endpoint + VNet firewall rules, no Private Endpoint)."
+              }
+            },
+            "cosmosAccountName": {
+              "type": "string",
+              "metadata": {
+                "description": "Cosmos DB account name"
+              }
+            },
+            "cosmosDatabaseName": {
+              "type": "string",
+              "metadata": {
+                "description": "Cosmos DB database name"
+              }
+            },
+            "cosmosContainerName": {
+              "type": "string",
+              "metadata": {
+                "description": "Cosmos DB container name"
+              }
+            },
+            "cosmosContainerMaxThroughput": {
+              "type": "int",
+              "metadata": {
+                "description": "Cosmos DB container max throughput"
+              }
+            },
+            "secondaryLocation": {
+              "type": "string",
+              "metadata": {
+                "description": "Secondary location for Cosmos DB replication"
+              }
+            },
+            "webAppName": {
+              "type": "string",
+              "metadata": {
+                "description": "Web App name"
+              }
+            },
+            "appServicePlanName": {
+              "type": "string",
+              "metadata": {
+                "description": "App Service Plan name"
+              }
+            },
+            "enableCmk": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Enable customer-managed keys (CMK) for Cosmos. \"true\" provisions Key Vault + user-assigned identity + key and encrypts the account. Empty/other = Microsoft-managed keys."
+              }
+            }
+          },
+          "variables": {
+            "usePrivateEndpoint": "[equals(parameters('cosmosNetworkMode'), 'privateEndpoint')]",
+            "useVnetRules": "[equals(parameters('cosmosNetworkMode'), 'vnetRules')]",
+            "cmkEnabled": "[equals(parameters('enableCmk'), 'true')]",
+            "mirroringEnabled": "[not(empty(parameters('fabricWorkspaceId')))]",
+            "effectiveFabricTenantId": "[if(empty(parameters('fabricTenantId')), subscription().tenantId, parameters('fabricTenantId'))]",
+            "fabricWorkspaceResourceId": "[format('/tenants/{0}/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/Fabric/providers/Microsoft.Fabric/workspaces/{1}', variables('effectiveFabricTenantId'), parameters('fabricWorkspaceId'))]",
+            "effectiveFabricSubnetAddressPrefix": "[if(empty(parameters('fabricSubnetAddressPrefix')), cidrSubnet(parameters('vnetAddressPrefix'), 27, 4), parameters('fabricSubnetAddressPrefix'))]",
+            "cmkIdentityName": "[format('id-cmk-{0}', parameters('cosmosAccountName'))]",
+            "keyVaultName": "[format('kv-{0}', uniqueString(resourceGroup().id, parameters('cosmosAccountName')))]",
+            "cmkKeyName": "cosmos-cmk-key",
+            "baseSubnets": [
+              {
+                "name": "[parameters('webAppSubnetName')]",
+                "properties": {
+                  "addressPrefix": "[parameters('webAppSubnetAddressPrefix')]",
+                  "delegations": [
+                    {
+                      "name": "delegation",
+                      "properties": {
+                        "serviceName": "Microsoft.Web/serverFarms"
+                      }
+                    }
+                  ],
+                  "serviceEndpoints": "[if(variables('useVnetRules'), createArray(createObject('service', 'Microsoft.AzureCosmosDB')), createArray())]",
+                  "privateEndpointNetworkPolicies": "Enabled"
+                }
+              },
+              {
+                "name": "[parameters('privateEndpointSubnetName')]",
+                "properties": {
+                  "addressPrefix": "[parameters('privateEndpointSubnetAddressPrefix')]",
+                  "privateEndpointNetworkPolicies": "Disabled"
+                }
+              }
+            ],
+            "fabricGatewaySubnet": {
+              "name": "[parameters('fabricGatewaySubnetName')]",
+              "properties": {
+                "addressPrefix": "[variables('effectiveFabricSubnetAddressPrefix')]",
+                "delegations": [
+                  {
+                    "name": "delegation",
+                    "properties": {
+                      "serviceName": "Microsoft.PowerPlatform/vnetaccesslinks"
+                    }
+                  }
+                ],
+                "privateEndpointNetworkPolicies": "Disabled"
+              }
+            },
+            "cosmosDataContributorRoleId": "00000000-0000-0000-0000-000000000002",
+            "cosmosDbOperatorRoleId": "230815da-be43-4aae-9cb4-875f7bd000aa"
+          },
+          "resources": [
+            {
+              "condition": "[variables('cmkEnabled')]",
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[variables('cmkIdentityName')]",
+              "location": "[parameters('location')]"
+            },
+            {
+              "condition": "[variables('cmkEnabled')]",
+              "type": "Microsoft.KeyVault/vaults",
+              "apiVersion": "2023-07-01",
+              "name": "[variables('keyVaultName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "sku": {
+                  "family": "A",
+                  "name": "standard"
+                },
+                "tenantId": "[subscription().tenantId]",
+                "enableSoftDelete": true,
+                "softDeleteRetentionInDays": 7,
+                "enablePurgeProtection": true,
+                "enableRbacAuthorization": false,
+                "accessPolicies": [
+                  {
+                    "tenantId": "[subscription().tenantId]",
+                    "objectId": "[if(variables('cmkEnabled'), reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('cmkIdentityName')), '2023-01-31').principalId, '')]",
+                    "permissions": {
+                      "keys": [
+                        "get",
+                        "wrapKey",
+                        "unwrapKey"
+                      ]
+                    }
+                  }
+                ],
+                "publicNetworkAccess": "Enabled"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('cmkIdentityName'))]"
+              ]
+            },
+            {
+              "condition": "[variables('cmkEnabled')]",
+              "type": "Microsoft.KeyVault/vaults/keys",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', variables('keyVaultName'), variables('cmkKeyName'))]",
+              "properties": {
+                "kty": "RSA",
+                "keySize": 3072,
+                "keyOps": [
+                  "wrapKey",
+                  "unwrapKey"
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/virtualNetworks",
+              "apiVersion": "2024-01-01",
+              "name": "[parameters('vnetName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "addressSpace": {
+                  "addressPrefixes": [
+                    "[parameters('vnetAddressPrefix')]"
+                  ]
+                },
+                "subnets": "[if(variables('mirroringEnabled'), concat(variables('baseSubnets'), createArray(variables('fabricGatewaySubnet'))), variables('baseSubnets'))]"
+              }
+            },
+            {
+              "type": "Microsoft.Web/serverfarms",
+              "apiVersion": "2023-12-01",
+              "name": "[parameters('appServicePlanName')]",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "B3",
+                "tier": "Basic"
+              },
+              "properties": {
+                "reserved": true
+              }
+            },
+            {
+              "type": "Microsoft.DocumentDB/databaseAccounts",
+              "apiVersion": "2024-05-15",
+              "name": "[parameters('cosmosAccountName')]",
+              "location": "[parameters('location')]",
+              "kind": "GlobalDocumentDB",
+              "identity": "[if(variables('cmkEnabled'), createObject('type', 'UserAssigned', 'userAssignedIdentities', createObject(format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('cmkIdentityName'))), createObject())), createObject('type', 'None'))]",
+              "properties": "[union(createObject('databaseAccountOfferType', 'Standard', 'disableLocalAuth', true(), 'consistencyPolicy', createObject('defaultConsistencyLevel', 'Session'), 'locations', createArray(createObject('locationName', parameters('location'), 'failoverPriority', 0, 'isZoneRedundant', false()), createObject('locationName', parameters('secondaryLocation'), 'failoverPriority', 1, 'isZoneRedundant', false())), 'publicNetworkAccess', if(variables('usePrivateEndpoint'), 'Disabled', 'Enabled'), 'isVirtualNetworkFilterEnabled', variables('useVnetRules'), 'virtualNetworkRules', if(variables('useVnetRules'), createArray(createObject('id', resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('webAppSubnetName')), 'ignoreMissingVNetServiceEndpoint', false())), createArray()), 'enableAutomaticFailover', false(), 'enableMultipleWriteLocations', false(), 'backupPolicy', createObject('type', 'Continuous', 'continuousModeProperties', createObject('tier', 'Continuous7Days'))), if(variables('cmkEnabled'), createObject('keyVaultKeyUri', if(variables('cmkEnabled'), format('{0}keys/{1}', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri, variables('cmkKeyName')), ''), 'defaultIdentity', format('UserAssignedIdentity={0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('cmkIdentityName')))), createObject()), if(variables('mirroringEnabled'), createObject('capabilities', createArray(createObject('name', 'EnableFabricNetworkAclBypass')), 'networkAclBypass', 'AzureServices', 'networkAclBypassResourceIds', createArray(variables('fabricWorkspaceResourceId'))), createObject()))]",
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('cmkIdentityName'))]",
+                "[resourceId('Microsoft.KeyVault/vaults/keys', variables('keyVaultName'), variables('cmkKeyName'))]",
+                "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.DocumentDB/databaseAccounts/sqlDatabases",
+              "apiVersion": "2024-05-15",
+              "name": "[format('{0}/{1}', parameters('cosmosAccountName'), parameters('cosmosDatabaseName'))]",
+              "properties": {
+                "resource": {
+                  "id": "[parameters('cosmosDatabaseName')]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers",
+              "apiVersion": "2024-05-15",
+              "name": "[format('{0}/{1}/{2}', parameters('cosmosAccountName'), parameters('cosmosDatabaseName'), parameters('cosmosContainerName'))]",
+              "properties": {
+                "resource": {
+                  "id": "[parameters('cosmosContainerName')]",
+                  "partitionKey": {
+                    "paths": [
+                      "/id"
+                    ],
+                    "kind": "Hash"
+                  },
+                  "indexingPolicy": {
+                    "indexingMode": "consistent",
+                    "automatic": true,
+                    "includedPaths": [
+                      {
+                        "path": "/*"
+                      }
+                    ],
+                    "excludedPaths": [
+                      {
+                        "path": "/\"_etag\"/?"
+                      }
+                    ]
+                  }
+                },
+                "options": {
+                  "autoscaleSettings": {
+                    "maxThroughput": "[parameters('cosmosContainerMaxThroughput')]"
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlDatabases', parameters('cosmosAccountName'), parameters('cosmosDatabaseName'))]"
+              ]
+            },
+            {
+              "condition": "[variables('usePrivateEndpoint')]",
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2024-06-01",
+              "name": "privatelink.documents.azure.com",
+              "location": "global"
+            },
+            {
+              "condition": "[variables('usePrivateEndpoint')]",
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}/{1}', 'privatelink.documents.azure.com', format('{0}-link', parameters('vnetName')))]",
+              "location": "global",
+              "properties": {
+                "registrationEnabled": false,
+                "virtualNetwork": {
+                  "id": "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.documents.azure.com')]",
+                "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+              ]
+            },
+            {
+              "condition": "[variables('usePrivateEndpoint')]",
+              "type": "Microsoft.Network/privateEndpoints",
+              "apiVersion": "2024-01-01",
+              "name": "[format('pe-{0}', parameters('cosmosAccountName'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "subnet": {
+                  "id": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName')), parameters('privateEndpointSubnetName'))]"
+                },
+                "privateLinkServiceConnections": [
+                  {
+                    "name": "cosmos-connection",
+                    "properties": {
+                      "privateLinkServiceId": "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]",
+                      "groupIds": [
+                        "Sql"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+              ]
+            },
+            {
+              "condition": "[variables('usePrivateEndpoint')]",
+              "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+              "apiVersion": "2024-01-01",
+              "name": "[format('{0}/{1}', format('pe-{0}', parameters('cosmosAccountName')), 'default')]",
+              "properties": {
+                "privateDnsZoneConfigs": [
+                  {
+                    "name": "config",
+                    "properties": {
+                      "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.documents.azure.com')]"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateEndpoints', format('pe-{0}', parameters('cosmosAccountName')))]",
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.documents.azure.com')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Web/sites",
+              "apiVersion": "2023-12-01",
+              "name": "[parameters('webAppName')]",
+              "location": "[parameters('location')]",
+              "kind": "app,linux",
+              "tags": {
+                "azd-service-name": "api"
+              },
+              "identity": {
+                "type": "SystemAssigned"
+              },
+              "properties": {
+                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('appServicePlanName'))]",
+                "reserved": true,
+                "virtualNetworkSubnetId": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName')), parameters('webAppSubnetName'))]",
+                "vnetRouteAllEnabled": false,
+                "httpsOnly": true,
+                "siteConfig": {
+                  "linuxFxVersion": "PYTHON|3.11",
+                  "appCommandLine": "startup.sh",
+                  "alwaysOn": true,
+                  "healthCheckPath": "/api/health",
+                  "appSettings": [
+                    {
+                      "name": "COSMOS_ENDPOINT",
+                      "value": "[reference(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), '2024-05-15').documentEndpoint]"
+                    },
+                    {
+                      "name": "COSMOS_DATABASE_NAME",
+                      "value": "[parameters('cosmosDatabaseName')]"
+                    },
+                    {
+                      "name": "COSMOS_CONTAINER_NAME",
+                      "value": "[parameters('cosmosContainerName')]"
+                    },
+                    {
+                      "name": "PORT",
+                      "value": "8000"
+                    },
+                    {
+                      "name": "AZURE_SUBSCRIPTION_ID",
+                      "value": "[subscription().subscriptionId]"
+                    },
+                    {
+                      "name": "AZURE_RESOURCE_GROUP",
+                      "value": "[resourceGroup().name]"
+                    },
+                    {
+                      "name": "COSMOS_ACCOUNT_NAME",
+                      "value": "[parameters('cosmosAccountName')]"
+                    },
+                    {
+                      "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
+                      "value": "true"
+                    }
+                  ],
+                  "cors": {
+                    "allowedOrigins": [
+                      "https://portal.azure.com"
+                    ]
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Web/serverfarms', parameters('appServicePlanName'))]",
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]",
+                "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('pe-{0}', parameters('cosmosAccountName')), 'default')]",
+                "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments",
+              "apiVersion": "2024-05-15",
+              "name": "[format('{0}/{1}', parameters('cosmosAccountName'), guid(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), resourceId('Microsoft.Web/sites', parameters('webAppName')), variables('cosmosDataContributorRoleId')))]",
+              "properties": {
+                "roleDefinitionId": "[format('{0}/sqlRoleDefinitions/{1}', resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), variables('cosmosDataContributorRoleId'))]",
+                "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2023-12-01', 'full').identity.principalId]",
+                "scope": "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]",
+                "[resourceId('Microsoft.Web/sites', parameters('webAppName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]",
+              "name": "[guid(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), resourceId('Microsoft.Web/sites', parameters('webAppName')), variables('cosmosDbOperatorRoleId'))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cosmosDbOperatorRoleId'))]",
+                "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2023-12-01', 'full').identity.principalId]",
+                "principalType": "ServicePrincipal"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]",
+                "[resourceId('Microsoft.Web/sites', parameters('webAppName'))]"
+              ]
+            },
+            {
+              "condition": "[variables('mirroringEnabled')]",
+              "type": "Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions",
+              "apiVersion": "2024-05-15",
+              "name": "[format('{0}/{1}', parameters('cosmosAccountName'), guid(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), 'FabricMirroringMetadataReader'))]",
+              "properties": {
+                "roleName": "Fabric Mirroring Metadata Reader",
+                "type": "CustomRole",
+                "assignableScopes": [
+                  "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]"
+                ],
+                "permissions": [
+                  {
+                    "dataActions": [
+                      "Microsoft.DocumentDB/databaseAccounts/readMetadata",
+                      "Microsoft.DocumentDB/databaseAccounts/readAnalytics"
+                    ]
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]"
+              ]
+            },
+            {
+              "condition": "[and(variables('mirroringEnabled'), not(empty(parameters('fabricWorkspacePrincipalId'))))]",
+              "type": "Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments",
+              "apiVersion": "2024-05-15",
+              "name": "[format('{0}/{1}', parameters('cosmosAccountName'), guid(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), parameters('fabricWorkspacePrincipalId'), 'FabricMirroringMetadataReader'))]",
+              "properties": {
+                "roleDefinitionId": "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', parameters('cosmosAccountName'), guid(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), 'FabricMirroringMetadataReader'))]",
+                "principalId": "[parameters('fabricWorkspacePrincipalId')]",
+                "scope": "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]",
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', parameters('cosmosAccountName'), guid(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), 'FabricMirroringMetadataReader'))]"
+              ]
+            },
+            {
+              "condition": "[and(variables('mirroringEnabled'), not(empty(parameters('fabricWorkspacePrincipalId'))))]",
+              "type": "Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments",
+              "apiVersion": "2024-05-15",
+              "name": "[format('{0}/{1}', parameters('cosmosAccountName'), guid(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), parameters('fabricWorkspacePrincipalId'), variables('cosmosDataContributorRoleId')))]",
+              "properties": {
+                "roleDefinitionId": "[format('{0}/sqlRoleDefinitions/{1}', resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), variables('cosmosDataContributorRoleId'))]",
+                "principalId": "[parameters('fabricWorkspacePrincipalId')]",
+                "scope": "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "webAppName": {
+              "type": "string",
+              "value": "[parameters('webAppName')]"
+            },
+            "webAppUrl": {
+              "type": "string",
+              "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2023-12-01').defaultHostName)]"
+            },
+            "cosmosAccountName": {
+              "type": "string",
+              "value": "[parameters('cosmosAccountName')]"
+            },
+            "cosmosEndpoint": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), '2024-05-15').documentEndpoint]"
+            },
+            "vnetName": {
+              "type": "string",
+              "value": "[parameters('vnetName')]"
+            },
+            "webAppPrincipalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2023-12-01', 'full').identity.principalId]"
+            },
+            "cmkEnabled": {
+              "type": "bool",
+              "value": "[variables('cmkEnabled')]"
+            },
+            "cmkKeyVaultName": {
+              "type": "string",
+              "value": "[if(variables('cmkEnabled'), variables('keyVaultName'), '')]"
+            },
+            "cmkKeyUri": {
+              "type": "string",
+              "value": "[if(variables('cmkEnabled'), format('{0}keys/{1}', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri, variables('cmkKeyName')), '')]"
+            },
+            "mirroringEnabled": {
+              "type": "bool",
+              "value": "[variables('mirroringEnabled')]"
+            },
+            "fabricWorkspaceResourceId": {
+              "type": "string",
+              "value": "[if(variables('mirroringEnabled'), variables('fabricWorkspaceResourceId'), '')]"
+            },
+            "fabricGatewaySubnetName": {
+              "type": "string",
+              "value": "[parameters('fabricGatewaySubnetName')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "AZURE_RESOURCE_GROUP": {
+      "type": "string",
+      "value": "[variables('resourceGroupName')]"
+    },
+    "SERVICE_API_NAME": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.webAppName.value]"
+    },
+    "webAppName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.webAppName.value]"
+    },
+    "webAppUrl": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.webAppUrl.value]"
+    },
+    "cosmosAccountName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.cosmosAccountName.value]"
+    },
+    "cosmosEndpoint": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.cosmosEndpoint.value]"
+    },
+    "vnetName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.vnetName.value]"
+    },
+    "webAppPrincipalId": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.webAppPrincipalId.value]"
+    },
+    "cmkEnabled": {
+      "type": "bool",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.cmkEnabled.value]"
+    },
+    "cmkKeyVaultName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.cmkKeyVaultName.value]"
+    },
+    "cmkKeyUri": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.cmkKeyUri.value]"
+    },
+    "mirroringEnabled": {
+      "type": "bool",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.mirroringEnabled.value]"
+    },
+    "fabricWorkspaceResourceId": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.fabricWorkspaceResourceId.value]"
+    },
+    "fabricGatewaySubnetName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'resources-deployment'), '2025-04-01').outputs.fabricGatewaySubnetName.value]"
+    }
+  }
+}

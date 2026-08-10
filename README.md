@@ -1,171 +1,157 @@
-# Azure Web App with Cosmos DB Private Endpoint or Virtual Network
+# Cosmos DB in a Private Network with Fabric Mirroring — sample harness
 
-This project demonstrates an Azure Web App (App Service) that can be accessed from the public internet while securely connecting to a Cosmos DB account. The Cosmos connectivity is configurable: Private Endpoint (Private Link) or VNet firewall rules (service endpoint + Cosmos VNet rules).
+A runnable Azure sample that shows you, end to end, how to put **Azure Cosmos DB behind a private network** and **mirror it into Microsoft Fabric** — the way most enterprise customers actually want to deploy it.
 
-## Architecture
+`azd up` provisions:
 
-- **Azure Web App**: HTTP-accessible Python (FastAPI) app, publicly available (Swagger UI at `/docs`)
-- **VNet Integration**: Web App integrates with a VNet subnet (optionally route-all if you enable it)
-- **Cosmos Connectivity**: Private Endpoint (Private Link) OR VNet firewall rules (`vnetRules` mode)
-- **Managed Identity**: Authentication to Cosmos DB without connection strings
+- A **Virtual Network** with two subnets (web app + private endpoints).
+- An **Azure Cosmos DB** account with public access disabled and reachable only from inside the VNet — either through a **Private Endpoint + Private DNS** or through **Service Endpoint + VNet firewall rules** (your choice, one parameter).
+- A **Python (FastAPI) web app** on App Service, VNet-integrated, that talks to Cosmos using its **Managed Identity** — no connection strings.
+- A small **single-page UI** (and Swagger UI at `/docs`) that lets you exercise the account, watch the wiring work, and turn on **Fabric Mirroring** against it.
+
+It's deliberately small and readable: one `app.py`, one HTML page, two Bicep files. The point is to make a private-network + Mirroring topology something you can stand up, poke at, tear down, and copy into your own infra without guessing.
+
+## What's in the box
+
+| Resource | Notes |
+|---|---|
+| Resource group | Tagged with `azd-env-name` and `owner` |
+| Virtual Network | `/24` with two `/27` subnets (web app + private endpoints). CIDR auto-selected to avoid overlap with VNets you already own (see below). |
+| Cosmos DB account | Two regions (single write region), continuous backup (7 days), local auth disabled |
+| App Service Plan | Linux, **B3 (Basic)** — sized for evaluation, not production |
+| Web App | Python 3.11, VNet-integrated, system-assigned Managed Identity |
+| Private DNS zone | `privatelink.documents.azure.com` (privateEndpoint mode only) |
+| Cosmos Private Endpoint | privateEndpoint mode only |
+| RBAC role assignments | `Cosmos DB Built-in Data Contributor` (data plane) + `Cosmos DB Operator` (control plane) on the web app's MI |
+
+The Fabric Mirrored Database itself is **not** provisioned by Bicep — it's created from the deployed app's setup card (or by you in the Fabric portal). That keeps the harness from needing Fabric admin permissions at deploy time.
 
 ## Prerequisites
 
-- [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli)
-- [Azure Developer CLI (azd)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
-- Python 3.11+ (only needed for local development)
+- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
+- [Azure Developer CLI (`azd`)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
+- An Azure subscription with permission to create a resource group, VNet, Cosmos account, and App Service Plan
+- **Python 3** on your local machine (the preprovision hook uses it to auto-pick a non-overlapping VNet CIDR — see below)
+- A [Microsoft Fabric](https://learn.microsoft.com/fabric/) workspace if you want to enable Mirroring (optional — the private-network deployment alone works without Fabric)
 
-## Configuration - Single Source of Truth
-
-**Deployment configuration lives in:**
-
-- `infra/main.bicep` (subscription-scope entrypoint + parameters)
-- `infra/resources.bicep` (resource group resources)
-
-Default values:
-
-- `location`: `westcentralus` (if `AZURE_LOCATION` is not already set)
-- `vnetAddressPrefix`: `172.21.1.0/27`
-- `webAppSubnetAddressPrefix`: `172.21.1.0/28`
-- `privateEndpointSubnetAddressPrefix`: `172.21.1.16/29`
-
-**To customize:** Edit the parameter defaults in `infra/main.bicep`.
-
-### Important: Avoiding VNet Address Conflicts
-
-Before deploying, check for existing VNets that might conflict in your subscription
+## Quick start
 
 ```bash
-# Check for VNets in your subscription
-az network vnet list --query "[].{Name:name, AddressSpace:addressSpace.addressPrefixes}" -o table
-
-# If conflicts exist, change vnetAddressPrefix in infra/main.bicep
-# Example: 172.21.2.0/24, 172.22.0.0/16, etc.
-```
-
-If you want to automatically pick a non-overlapping CIDR in your subscription, see the IP Planner helper tool in [tools/README.md](tools/README.md).
-
-## Quick Start
-
-### 1. Clone and Navigate
-
-```bash
-cd fabric-mirror-pe-app-testing
-```
-
-### 2. Login to Azure
-
-```bash
+git clone <this-repo>
+cd cosmos-webapp-network-sample
 az login
 azd auth login
-```
-
-### 3. Deploy Everything
-
-Optional: switch Cosmos connectivity mode.
-
-- Default: `privateEndpoint` (Private Link + Private DNS)
-- Alternative: `vnetRules` (Cosmos public network enabled + Service Endpoint + VNet firewall rules; no Private Endpoint)
-
-```bash
-azd env set COSMOS_NETWORK_MODE vnetRules
-```
-
-Note: set this **before** running `azd up`. If you change this after resources are created, `azd`/ARM incremental deployments will not delete an existing private endpoint automatically. Use a new azd environment name, or run `azd down --force --purge` and redeploy.
-
-```bash
 azd up
 ```
 
-Follow prompts:
+`azd up` will prompt for:
 
-- Environment name. This sets your resource group name
-- Subscription (select your Azure subscription)
-- Location (select `westcentralus` to match default, or your preferred region)
+- An **environment name** (used as the resource group name and resource prefix)
+- A **subscription**
+- A **location** (default `westcentralus`)
+- The **Cosmos network mode** (`privateEndpoint` or `vnetRules`) — pick one and stick with it for the lifetime of the environment
 
-The deployment will:
+When provisioning finishes, `azd` prints the Web App URL. Open it. The first card walks you through enabling Fabric Mirroring against the Cosmos account that was just deployed.
 
-1. Create resource group with owner tag
-1. Deploy VNet with subnets
-1. Create Cosmos DB account using the selected mode (`privateEndpoint` or `vnetRules`)
-1. Deploy Web App with VNet integration
-1. Configure Managed Identity for Cosmos DB access
-1. Deploy your web app code
+## VNet address planning — handled for you
 
-### 4. Test the Web App
+The biggest source of friction with private-network deployments on busy subscriptions is finding a `/24` that doesn't already overlap with another VNet. The `azd up` preprovision hook calls `tools/ip_planner.py`, which:
 
-After deployment completes:
+1. Lists every existing VNet address space in your current subscription (`az network vnet list`).
+2. Walks the `172.16.0.0/16` range looking for the first non-overlapping `/24`.
+3. Carves it into two `/27` subnets (web app + private endpoints).
+4. Sets the result as `azd` env variables, which are passed straight into Bicep.
 
-`azd` will print the Web App URL and the API docs URL (`/docs`) at the end of provisioning.
+You'll see a line like:
 
-```bash
-# Get the Web App URL
-azd env get-values | grep webAppUrl
-
-# Or from Azure CLI
-az webapp list --query "[?starts_with(name, 'app-')].defaultHostName" -o tsv
+```
+Auto-planned VNet CIDR: 172.16.7.0/24 (webapp 172.16.7.0/27, private endpoints 172.16.7.32/27)
 ```
 
-Test the endpoints (recommended): open the Swagger UI and use **Try it out**.
+If you want to **pin** a CIDR (e.g. you have a fixed IP allocation from your network team):
 
-- API docs: `https://<your-app>.azurewebsites.net/docs`
-- Health: `GET /`
-- Insert: `POST /api/insertData`
-- Query: `GET /api/queryData`
+```bash
+azd env set VNET_ADDRESS_PREFIX 10.50.4.0/24
+azd env set WEBAPP_SUBNET_ADDRESS_PREFIX 10.50.4.0/27
+azd env set PRIVATE_ENDPOINT_SUBNET_ADDRESS_PREFIX 10.50.4.32/27
+azd up
+```
 
-![Swagger UI example](media/swagger_ui.png)
+The hook respects an existing `VNET_ADDRESS_PREFIX` and skips planning. To re-plan: `azd env set VNET_ADDRESS_PREFIX ""` and `azd up` again.
 
+You can also run the planner standalone and inspect what it would pick:
 
-Tip: App Service Python deployments can be slow because they often do a remote build (`pip install`) on every deploy.
-If you want faster/more deterministic deploys later, you can build a zip package locally (includes dependencies) and deploy that:
+```bash
+python tools/ip_planner.py --format json
+python tools/ip_planner.py --webapp-ips 12 --cosmos-ips 4   # right-size the subnets
+```
+
+See [tools/README.md](tools/README.md) for all options.
+
+## Setting up Fabric Mirroring
+
+Open the **Fabric Mirror Setup** card in the deployed app:
+
+1. Sign in to your Fabric tenant (uses your own access — no service principal setup needed).
+2. The card creates a Mirrored Database in your chosen workspace, pointing at the Cosmos account this harness deployed.
+3. The workspace + mirrored DB name are saved in your browser's local storage so the verification flows can find them later.
+
+You can also configure Mirroring manually in the Fabric portal and just type the workspace + mirrored DB name into the setup card — the harness uses the SQL Analytics endpoint of the mirrored DB to query.
+
+### Mirroring over Private Link (no IP allowlists)
+
+When Cosmos has **public network access disabled**, you can mirror into Fabric **without**
+maintaining the large DataFactory/PowerQueryOnline IP allowlists by using a **Fabric
+Virtual Network Data Gateway** plus a trusted-workspace network ACL bypass.
+
+**[docs/mirroring-over-private-link.md](docs/mirroring-over-private-link.md)** is a
+**portal-based** step-by-step (Azure portal + Fabric portal, with screenshots). Note that
+three Cosmos-account settings currently have **no portal UI** (the network ACL bypass
+capability, the trusted-workspace authorization, and data-plane RBAC) — the guide runs those
+in **Azure Cloud Shell**, which is built into the Azure portal.
+
+Prefer infrastructure-as-code? The following automate the same setup (optional):
+
+- **Bicep** (`infra/resources.bicep`, set `FABRIC_WORKSPACE_ID`) — capability,
+  trusted-workspace bypass, custom mirroring RBAC role, and the delegated `snet-fabric` subnet.
+- **`tools/setup-mirroring-private-link.ps1`** — VNet Data Gateway + mirror creation via REST.
+- **`tools/reset-mirroring-private-link.ps1`** — reset the network ACL / Fabric artifacts.
+
+## Switching Cosmos network mode
+
+```bash
+azd env set COSMOS_NETWORK_MODE vnetRules   # or privateEndpoint
+azd up
+```
+
+Set this **before** running `azd up`. ARM incremental deployments will not delete an existing Private Endpoint when you flip back to `vnetRules` — use a new `azd` environment name, or `azd down --force --purge` and redeploy.
+
+## Faster deploys
+
+App Service Python deployments do a remote build (`pip install`) by default, which is slow. To build a deterministic zip locally and deploy that:
 
 ```powershell
 pwsh -File .\tools\build_local_package.ps1
 ```
 
-This repo also sets the web app to use `Always On` and a health check path for more stable startup (applies on next provision/update).
+The web app is also configured with **Always On** and a `/api/health` health check path for stable startup.
 
-
-
-## What Gets Deployed
-
-The Bicep templates create:
-
-1. Resource group with tags (`azd-env-name`, `owner`)
-1. Virtual Network with two subnets (web app, private endpoints)
-1. Cosmos DB account (mode-controlled: Private Endpoint or VNet rules; local auth disabled)
-    - Continuous backup enabled (7-day tier)
-1. Web App with VNet integration and Managed Identity
-1. App Service Plan (Basic B1)
-1. Private DNS zone for Cosmos DB (Private Endpoint mode only)
-1. RBAC role assignments (Cosmos DB Data Contributor)
-
-
-
-## Verification
-
-### Check VNet Integration
+## Verification helpers
 
 ```bash
-# Get resource names
-RG_NAME=$(azd env get-values | grep AZURE_RESOURCE_GROUP | cut -d'=' -f2)
-WEBAPP_NAME=$(azd env get-values | grep WEBAPP_NAME | cut -d'=' -f2)
+# Get the web app URL
+azd env get-values | grep webAppUrl
 
-# Verify VNet integration
+# Confirm VNet integration
+RG_NAME=$(azd env get-values | grep AZURE_RESOURCE_GROUP | cut -d'=' -f2)
+WEBAPP_NAME=$(azd env get-values | grep webAppName | cut -d'=' -f2)
 az webapp vnet-integration list --name $WEBAPP_NAME --resource-group $RG_NAME
+
+# Tail web app logs
+az webapp log tail --name $WEBAPP_NAME --resource-group $RG_NAME
 ```
 
-### Test Private Endpoint Connectivity
-
-The Cosmos DB Data Explorer in the Azure Portal will NOT work because:
-
-- Cosmos DB has `publicNetworkAccess: Disabled`
-- Portal cannot connect through your private endpoint
-- This is expected and correct behavior
-
-To verify data, use the web app's query endpoint:
-
-To verify data, open the Swagger UI (`https://<your-app>.azurewebsites.net/docs`) and run `GET /api/queryData` using **Try it out**.
+> **Note on the Cosmos Data Explorer:** in `privateEndpoint` mode, the portal Data Explorer cannot reach the account because `publicNetworkAccess` is disabled. This is expected. Use the harness's own query endpoint, or the **Try it out** flow in `/docs`.
 
 ## Cleanup
 
@@ -173,24 +159,97 @@ To verify data, open the Swagger UI (`https://<your-app>.azurewebsites.net/docs`
 azd down --force --purge
 ```
 
-This removes all Azure resources created by the deployment.
+This removes everything the harness created — including the Cosmos account and any data in it. It does **not** remove a Mirrored Database you created in your Fabric workspace; delete that manually from the Fabric portal.
 
 ## Troubleshooting
 
-### VNet Address Conflicts
+**Deployment fails with `The address space ... is already in use`**
+Re-run `azd env set VNET_ADDRESS_PREFIX ""` and `azd up` to force the planner to pick a fresh range. If the planner can't find one, scope a wider search range with `python tools/ip_planner.py --base 10.0.0.0/8 --format json` and pin the result.
 
-If deployment fails with "The address space ... is already in use":
+**Web app can't connect to Cosmos**
 
-1. Check existing VNets: `az network vnet list`
-2. Edit `vnetAddressPrefix` in `infra/main.bicep`
-3. Choose a non-conflicting range (e.g., `10.5.1.0/24`)
-4. Run `azd up` again
+1. Confirm VNet integration is active: `az webapp vnet-integration list ...`
+2. In `privateEndpoint` mode, confirm the Private DNS zone is linked to the VNet
+3. Confirm the web app's MI has the `Cosmos DB Built-in Data Contributor` data-plane role
+4. Tail logs: `az webapp log tail ...`
 
-### Cosmos DB Connection Issues
+**Fabric verification fails or hangs**
 
-If the web app can't connect to Cosmos DB:
+- Confirm you signed into the **Fabric Mirror Setup** card with an account that has access to your workspace.
+- Confirm the Mirrored Database is in a healthy state in the Fabric portal (not still initializing).
+- The SQL Analytics endpoint can lag behind Cosmos by a few seconds — the verification flows already wait up to 5 minutes for catch-up.
 
-1. Verify VNet integration is active
-2. Check private DNS zone is linked to VNet
-3. Verify Managed Identity has Cosmos DB Data Contributor role
-4. Check web app logs: `az webapp log tail --name $WEBAPP_NAME --resource-group $RG_NAME`
+---
+
+# Bonus: regional failover resilience testing
+
+The harness includes a **Run Full Test** card that exercises a much more demanding scenario than the basic Mirroring setup: it triggers a **manual regional failover of Cosmos DB while writes are in flight** and reports back on what survived. This is included because "what actually happens to in-flight writes during a failover, and does Mirroring stay consistent?" is one of the most common questions we get asked, and pictures beat docs.
+
+The flow:
+
+1. Start a long-running insert loop into Cosmos.
+2. Trigger a **manual regional failover** mid-batch.
+3. Continue inserting through the failover.
+4. Wait for Mirroring to catch up.
+5. Verify that every successful Cosmos commit reached Fabric.
+
+It then renders one of three verdicts — with **explicit, separate judgments** for *Cosmos Mirroring* and for *your application's resilience*:
+
+| Verdict | Meaning | What to do |
+|---|---|---|
+| 🟢 **PASS** | Every insert succeeded **and** every Cosmos commit reached Fabric. | Nothing — celebrate. |
+| 🟠 **PARTIAL** | Cosmos Mirroring passed (zero silent data loss), but the application lost in-flight writes during the failover window. | This is the **most common** outcome and reveals an *application gap*, not a Mirroring gap. See below. |
+| 🔴 **FAIL** | Successfully committed Cosmos writes are **missing** from Fabric. | This is a Mirroring problem. Capture the run details and report it. |
+
+### Interpreting PARTIAL — and why it matters
+
+A PARTIAL verdict means two things at once:
+
+1. **Cosmos Mirroring did its job perfectly.** Every write that Cosmos persisted made it to Fabric. There is no silent data loss.
+2. **Your application code lost writes that never made it into Cosmos in the first place.** The SDK call hung past the harness's per-request timeout (30 s) during the failover, and the harness has no retry policy to re-attempt the writes that timed out.
+
+This is exactly what a typical customer application looks like by default. The Cosmos SDK does not transparently retry a write across a manual regional failover with out-of-the-box settings, and most apps don't add their own retry policy on top.
+
+**To survive a planned failover without losing writes, your application needs:**
+
+- An explicit **retry policy** for transient errors (`CosmosHttpResponseError 503`, `asyncio.TimeoutError`, `ServiceRequestError`, etc.). Use exponential backoff with jitter, capped at a sensible maximum.
+- A **request timeout** sized to your account's failover RPO/RTO, not the Python async default (which has no default).
+- Optionally, an explicit **`preferred_locations`** configuration on the `CosmosClient` so the SDK already knows where to look when the primary write endpoint becomes unreachable.
+
+A polished sample of a resilient client is a planned addition. The goal of this section as published today is to *demonstrate* the gap so you can decide how to close it in your own application.
+
+### Running the failover test
+
+In the **Run Full Test** card, set:
+
+- **Total items** — how many inserts to run (300 is a good baseline)
+- **Delay between inserts** — milliseconds between each insert (100 ms is realistic for a steady workload)
+- **Trigger failover after N items** — when to flip the primary region mid-batch (40 is a good default)
+- **Failover to region** — picked from the account's secondary region(s)
+
+Hit **Run Full Test**. The app executes all 6 steps and renders a verdict. Steps stream live so you can watch the failover happen.
+
+Note: a manual failover takes a Cosmos account out of write availability for ~30-60 s. Don't run this against an account anyone else is using.
+
+## Repository layout
+
+```
+.
+├── app.py                  # FastAPI app (insert loop, failover trigger, Mirror verification)
+├── static/index.html       # Single-page UI for the harness
+├── startup.sh              # App Service startup (installs ODBC Driver 18, runs gunicorn)
+├── requirements.txt
+├── docs/
+│   └── mirroring-over-private-link.md  # VNet Data Gateway mirroring guide (no IP allowlists)
+├── infra/
+│   ├── main.bicep          # Subscription-scope entrypoint + parameters
+│   ├── main.parameters.json
+│   └── resources.bicep     # All resource definitions
+├── azure.yaml              # azd config + preprovision hook (CIDR planner, OWNER_EMAIL, COSMOS_NETWORK_MODE)
+└── tools/
+    ├── ip_planner.py                       # Pick a non-overlapping VNet CIDR for your subscription
+    ├── build_local_package.ps1             # Build a zip with deps for faster deploys
+    ├── setup-mirroring-private-link.ps1    # Configure trust + gateway + start mirror (REST)
+    └── reset-mirroring-private-link.ps1    # Reset network ACL / Fabric artifacts (dry-run default)
+```
+

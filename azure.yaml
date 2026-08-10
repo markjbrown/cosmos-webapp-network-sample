@@ -90,6 +90,41 @@ hooks:
           fi
 
           echo "Using COSMOS_NETWORK_MODE=$COSMOS_NETWORK_MODE"
+
+          # ── Auto-plan VNet CIDRs to avoid overlaps with existing VNets in the subscription ──
+          # If the user has already pinned VNET_ADDRESS_PREFIX (via azd env set), respect it.
+          # Otherwise, run tools/ip_planner.py against the live subscription and capture
+          # a non-overlapping /24 + two /27 subnets.
+          existing_vnet_prefix=$(azd env get-values 2>/dev/null | grep '^VNET_ADDRESS_PREFIX=' | head -n1 | sed 's/^VNET_ADDRESS_PREFIX=//;s/^"//;s/"$//')
+          if [ -z "$existing_vnet_prefix" ]; then
+            echo "Searching for a non-overlapping VNet CIDR in the current subscription..."
+            if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+              echo "WARNING: python not found on PATH. Skipping auto-CIDR planning; will use Bicep defaults (172.21.1.0/24)." 1>&2
+              echo "  To plan manually, install Python 3 and run: python tools/ip_planner.py" 1>&2
+              azd env set VNET_ADDRESS_PREFIX "172.21.1.0/24" >/dev/null
+              azd env set WEBAPP_SUBNET_ADDRESS_PREFIX "172.21.1.0/27" >/dev/null
+              azd env set PRIVATE_ENDPOINT_SUBNET_ADDRESS_PREFIX "172.21.1.32/27" >/dev/null
+            else
+              py=$(command -v python3 || command -v python)
+              plan_json=$("$py" tools/ip_planner.py --format json 2>/dev/null)
+              if [ -z "$plan_json" ] || ! echo "$plan_json" | grep -q vnetAddressPrefix; then
+                echo "WARNING: ip_planner could not pick a CIDR (az not signed in, or no free range). Using defaults (172.21.1.0/24)." 1>&2
+                azd env set VNET_ADDRESS_PREFIX "172.21.1.0/24" >/dev/null
+                azd env set WEBAPP_SUBNET_ADDRESS_PREFIX "172.21.1.0/27" >/dev/null
+                azd env set PRIVATE_ENDPOINT_SUBNET_ADDRESS_PREFIX "172.21.1.32/27" >/dev/null
+              else
+                vnet_cidr=$(echo "$plan_json" | "$py" -c "import json,sys;print(json.load(sys.stdin)['vnetAddressPrefix'])")
+                webapp_cidr=$(echo "$plan_json" | "$py" -c "import json,sys;print(json.load(sys.stdin)['webAppSubnetAddressPrefix'])")
+                pe_cidr=$(echo "$plan_json" | "$py" -c "import json,sys;print(json.load(sys.stdin)['privateEndpointSubnetAddressPrefix'])")
+                echo "Auto-planned VNet CIDR: $vnet_cidr (webapp $webapp_cidr, private endpoints $pe_cidr)"
+                azd env set VNET_ADDRESS_PREFIX "$vnet_cidr" >/dev/null
+                azd env set WEBAPP_SUBNET_ADDRESS_PREFIX "$webapp_cidr" >/dev/null
+                azd env set PRIVATE_ENDPOINT_SUBNET_ADDRESS_PREFIX "$pe_cidr" >/dev/null
+              fi
+            fi
+          else
+            echo "Using pinned VNET_ADDRESS_PREFIX=$existing_vnet_prefix (clear with: azd env set VNET_ADDRESS_PREFIX '' to re-plan)"
+          fi
       windows:
         shell: pwsh
         interactive: true
@@ -156,6 +191,48 @@ hooks:
           }
 
           Write-Host "Using COSMOS_NETWORK_MODE=$($env:COSMOS_NETWORK_MODE)"
+
+          # ── Auto-plan VNet CIDRs to avoid overlaps with existing VNets in the subscription ──
+          # If the user has already pinned VNET_ADDRESS_PREFIX (via azd env set), respect it.
+          # Otherwise, run tools/ip_planner.py against the live subscription and capture
+          # a non-overlapping /24 + two /27 subnets.
+          $existingVnetLine = azd env get-values 2>$null | Select-String -Pattern '^VNET_ADDRESS_PREFIX=' | Select-Object -First 1
+          $existingVnet = $null
+          if ($existingVnetLine) {
+            $existingVnet = $existingVnetLine.Line.Split('=',2)[1].Trim().Trim('"')
+          }
+          if ([string]::IsNullOrWhiteSpace($existingVnet)) {
+            Write-Host "Searching for a non-overlapping VNet CIDR in the current subscription..."
+            $py = Get-Command python -ErrorAction SilentlyContinue
+            if (-not $py) { $py = Get-Command python3 -ErrorAction SilentlyContinue }
+            $defaultVnet = '172.21.1.0/24'
+            $defaultWebapp = '172.21.1.0/27'
+            $defaultPe = '172.21.1.32/27'
+            if (-not $py) {
+              Write-Warning "python not found on PATH. Skipping auto-CIDR planning; using defaults ($defaultVnet)."
+              Write-Host "  To plan manually, install Python 3 and run: python tools/ip_planner.py"
+              azd env set VNET_ADDRESS_PREFIX $defaultVnet | Out-Null
+              azd env set WEBAPP_SUBNET_ADDRESS_PREFIX $defaultWebapp | Out-Null
+              azd env set PRIVATE_ENDPOINT_SUBNET_ADDRESS_PREFIX $defaultPe | Out-Null
+            } else {
+              try {
+                $planJson = & $py.Source tools/ip_planner.py --format json 2>$null
+                if (-not $planJson -or $planJson -notmatch 'vnetAddressPrefix') { throw "planner returned no usable output" }
+                $plan = $planJson | ConvertFrom-Json
+                Write-Host ("Auto-planned VNet CIDR: {0} (webapp {1}, private endpoints {2})" -f $plan.vnetAddressPrefix, $plan.webAppSubnetAddressPrefix, $plan.privateEndpointSubnetAddressPrefix)
+                azd env set VNET_ADDRESS_PREFIX $plan.vnetAddressPrefix | Out-Null
+                azd env set WEBAPP_SUBNET_ADDRESS_PREFIX $plan.webAppSubnetAddressPrefix | Out-Null
+                azd env set PRIVATE_ENDPOINT_SUBNET_ADDRESS_PREFIX $plan.privateEndpointSubnetAddressPrefix | Out-Null
+              } catch {
+                Write-Warning "ip_planner could not pick a CIDR ($($_.Exception.Message)). Using defaults ($defaultVnet)."
+                azd env set VNET_ADDRESS_PREFIX $defaultVnet | Out-Null
+                azd env set WEBAPP_SUBNET_ADDRESS_PREFIX $defaultWebapp | Out-Null
+                azd env set PRIVATE_ENDPOINT_SUBNET_ADDRESS_PREFIX $defaultPe | Out-Null
+              }
+            }
+          } else {
+            Write-Host "Using pinned VNET_ADDRESS_PREFIX=$existingVnet (clear with: azd env set VNET_ADDRESS_PREFIX '' to re-plan)"
+          }
     postprovision:
       windows:
         shell: pwsh

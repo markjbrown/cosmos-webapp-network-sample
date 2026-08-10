@@ -2,6 +2,8 @@
 
 This folder contains a small helper script to choose non-overlapping CIDR ranges for VNets/subnets.
 
+> **You usually don't need to run this manually.** The repo's `azure.yaml` preprovision hook calls it for you on first `azd up` and stores the result as `azd` env variables. Use the CLI form below if you want to *preview* what would be picked, *override* the search range, or *right-size* the subnets for a custom workload.
+
 ## What it does
 
 - Calls `az network vnet list` (subscription-wide) to collect all existing VNet address prefixes
