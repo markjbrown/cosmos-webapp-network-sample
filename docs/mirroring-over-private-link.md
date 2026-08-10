@@ -118,6 +118,28 @@ Your account is reachable through an approved **private endpoint** (public acces
 endpoint, or a peered VNet with routing) and resolve the Cosmos private DNS
 (`privatelink.documents.azure.com`); avoid overlapping `10.0.1.x`.
 
+> ### ⚠️ Outbound internet access is required on this subnet
+> The VNet data gateway must reach **Azure AD (`login.microsoftonline.com`)** to complete the
+> OAuth sign-in in **Step 7**. The Add-subnet blade checks **"Enable private subnet (no default
+> outbound access)"** by default, which **blocks** that. Give the subnet outbound internet —
+> attach a **NAT gateway** (recommended):
+>
+> **Azure portal:** create a **NAT gateway** (with a new **Standard public IP**) in the same
+> region, and on its **Subnets** tab associate it with `snet-fabric`. (Or: **Virtual network →
+> Subnets → snet-fabric → NAT gateway**.)
+>
+> **Azure CLI:**
+> ```bash
+> RG="rg-<env>"; VNET="vnet-<env>"; LOC="<region>"
+> az network public-ip create -g "$RG" -n pip-nat-fabric --sku Standard --allocation-method Static -l "$LOC"
+> az network nat gateway create  -g "$RG" -n nat-fabric --public-ip-addresses pip-nat-fabric -l "$LOC"
+> az network vnet subnet update   -g "$RG" --vnet-name "$VNET" -n snet-fabric --nat-gateway nat-fabric
+> ```
+>
+> Without outbound access, creating the Cosmos DB v2 connection in Step 7 fails with:
+> *"OAuth login through the data gateway was unsuccessful … The service returned an invalid
+> token."*
+
 ## Step 3 — Grant Cosmos data-plane RBAC
 
 Grant the identity that will create the Fabric connection (typically you) the metadata and
