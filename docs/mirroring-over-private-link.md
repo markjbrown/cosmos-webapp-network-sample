@@ -247,9 +247,13 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
 1. In the **Fabric portal**, select the **gear (Settings)** → **Manage connections and
    gateways**.
 2. Open the **Virtual network data gateways** tab → **+ New**.
-3. Provide: **Subscription**, **Resource group**, **Virtual network** (`vnet-<env>`),
-   **Subnet** (`snet-fabric` from Step 2), a **Gateway name**, and an inactivity timeout.
-4. Select **Create**. Fabric provisions the gateway inside your VNet, in the same region.
+3. Provide: **License capacity** (your active Fabric capacity), **Azure subscription**,
+   **Resource group**, **Virtual network** (`vnet-<env>`), **Subnet** (`snet-fabric` from
+   Step 2), a **Name**, and (under **Advanced options**) an inactivity timeout.
+
+   ![Fabric — New virtual network data gateway dialog](media/private-link-mirroring/09-fabric-new-vnet-data-gateway.png)
+
+4. Select **Save**. Fabric provisions the gateway inside your VNet, in the same region.
 
 ## Step 7 — Create the Azure Cosmos DB v2 connection (OAuth)
 
