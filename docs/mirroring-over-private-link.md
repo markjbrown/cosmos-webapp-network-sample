@@ -258,21 +258,23 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
 ## Step 7 — Create the Azure Cosmos DB v2 connection (OAuth)
 
 1. Still under **Manage connections and gateways**, open **Connections → + New**.
-2. Leave the connection type as **Cloud** (the default tile).
-3. **Connection name:** a name (for example, `mjb-cosmos-private-link`).
-   **Connection type:** `Azure Cosmos DB v2`.
-4. **Cosmos DB Endpoint:** `https://<account-name>.documents.azure.com:443/`
-5. **Authentication method:** **OAuth 2.0** → select **Edit credentials** and sign in.
-6. **Check** *"Allow this connection to be utilized with either on-premises data gateways or
-   VNet data gateways."* This is **required** — it lets the OAuth cloud connection route
-   through your VNet data gateway to reach the private endpoint. Left unchecked, the
-   connection is cloud-only and can't reach the private-network account, so mirroring fails.
-7. Select **Create**.
+2. For the connectivity type, select **Virtual network**.
+3. **Gateway cluster name:** select the VNet Data Gateway created in Step 6
+   (for example, `vnet-<env>-snet-fabric`).
+4. **Connection name:** a name (for example, `mjb-cosmos-private-link`).
+5. **Connection type:** `Azure Cosmos DB v2`.
+6. **Cosmos DB Endpoint:** `https://<account-name>.documents.azure.com:443/`
+7. **Authentication method:** **OAuth 2.0** → select **Edit credentials** and sign in.
+   (Leave **Skip test connection** unchecked so the connection is validated.)
+8. **Privacy level:** **Organizational**.
+9. Select **Create**.
 
-![Fabric — New connection dialog for Azure Cosmos DB v2 with the VNet data gateways checkbox enabled](media/private-link-mirroring/10-fabric-new-connection-cosmos-v2.png)
+![Fabric — New connection dialog: Virtual network connectivity, Gateway cluster name, Azure Cosmos DB v2, OAuth 2.0](media/private-link-mirroring/10-fabric-new-connection-cosmos-v2.png)
 
 > Private-network mirroring supports **OAuth-based authentication only**. This is the one step
-> that always requires an interactive sign-in.
+> that always requires an interactive sign-in. Selecting **Virtual network** connectivity and a
+> **Gateway cluster name** is what routes the connection through your VNet data gateway to the
+> private endpoint.
 
 ## Step 8 — Create the mirrored database
 
