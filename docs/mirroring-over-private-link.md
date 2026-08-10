@@ -316,9 +316,15 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
 
 1. In your **Fabric workspace**, select **+ New item → Mirrored Azure Cosmos DB** (or
    **Create → Mirror data → Mirrored Azure Cosmos DB**).
-2. Choose the **Azure Cosmos DB v2** connection from Step 7.
-3. Select the **database** (and, optionally, specific containers) to mirror.
-4. Select **Connect / Create** to start mirroring.
+2. On the **"Choose a database connection to get started"** screen, under **New sources**
+   select **Azure Cosmos DB v2**.
+   > Your gateway-bound connection does **not** appear in the **OneLake catalog** list on this
+   > screen — that list only shows existing OneLake / cloud-connected sources. VNet data gateway
+   > connections are selected through **New sources → Azure Cosmos DB v2**.
+3. On the next screen, select your **existing connection** from Step 7 (the
+   `VirtualNetworkGateway` connection, e.g. `mjb-cosmos-…`). Sign in again if prompted.
+4. Select the **database** (and, optionally, specific containers) to mirror, then **Connect**
+   to start mirroring.
 
 ## Step 9 — Verify
 
