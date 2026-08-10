@@ -309,25 +309,30 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
 > that can't be done in the portal.
 
 You need your **Fabric workspace ID** and the **connection ID** from Step 6. The connection ID
-is a **GUID** (not the display name), and Fabric's portal doesn't surface it — the scripts below
-resolve it from the connection name you gave it in Step 6. Run the whole block in the terminal
-you kept open.
+is a **GUID** (not the display name) that Fabric's portal doesn't surface, so the scripts below
+resolve it from your **Cosmos endpoint host** (deterministic — no name typos). Run the whole
+block in the terminal you kept open.
 
 ### Azure PowerShell
 
 ```powershell
-$WSID = "<fabric-workspace-id>"
-$name = "<connection name from Step 6>"
-$DB   = "CosmosMirrorDatabase"
-$NAME = "<env>-mirror"
+$WSID     = "<fabric-workspace-id>"
+$endpoint = "<account-name>.documents.azure.com"   # your Cosmos account host
+$DB       = "CosmosMirrorDatabase"
+$NAME     = "<env>-mirror"
 
 $tok   = Get-AzAccessToken -ResourceUrl 'https://api.fabric.microsoft.com'
 $plain = if ($tok.Token -is [securestring]) { [System.Net.NetworkCredential]::new('', $tok.Token).Password } else { $tok.Token }
 $h     = @{ Authorization = "Bearer $plain"; 'Content-Type' = 'application/json' }
 
-# Resolve the connection GUID from its display name
+# Resolve the connection GUID by the Cosmos endpoint (picks the VNet-gateway connection).
+# To list all your Cosmos connections instead:
+#   (Invoke-RestMethod -Uri 'https://api.fabric.microsoft.com/v1/connections' -Headers $h).value |
+#     Where-Object { $_.connectionDetails.type -eq 'CosmosDB' } | Select displayName, id, connectivityType
 $CONN = ((Invoke-RestMethod -Uri 'https://api.fabric.microsoft.com/v1/connections' -Headers $h).value |
-         Where-Object displayName -eq $name).id
+         Where-Object { $_.connectionDetails.type -eq 'CosmosDB' -and $_.connectivityType -eq 'VirtualNetworkGateway' -and $_.connectionDetails.path -like "*$endpoint*" } |
+         Select-Object -First 1).id
+if (-not $CONN) { throw "No VNet-gateway Cosmos DB v2 connection found for $endpoint. Create it in Step 6 first." }
 
 function B64($o){ [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Depth 20))) }
 $mirroring = @{ properties = @{
@@ -347,15 +352,15 @@ Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspa
 
 ```bash
 WSID="<fabric-workspace-id>"
-CONN_NAME="<connection name from Step 6>"
+ENDPOINT="<account-name>.documents.azure.com"   # your Cosmos account host
 DB="CosmosMirrorDatabase"
 NAME="<env>-mirror"
 
 TOKEN=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
 
-# Resolve the connection GUID from its display name
-CONN=$(curl -sS "https://api.fabric.microsoft.com/v1/connections" -H "Authorization: Bearer $TOKEN" \
-  | jq -r --arg n "$CONN_NAME" '.value[] | select(.displayName==$n) | .id')
+# Resolve the connection GUID by the Cosmos endpoint (picks the VNet-gateway connection).
+CONN=$(curl -sS "https://api.fabric.microsoft.com/v1/connections" -H "Authorization: Bearer $TOKEN" | jq -r --arg e "$ENDPOINT" 'first(.value[] | select(.connectionDetails.type=="CosmosDB" and .connectivityType=="VirtualNetworkGateway" and (.connectionDetails.path|contains($e))) | .id)')
+[ -n "$CONN" ] || { echo "No VNet-gateway Cosmos DB v2 connection found for $ENDPOINT" >&2; exit 1; }
 
 MIRRORING=$(jq -cn --arg c "$CONN" --arg d "$DB" '{properties:{source:{type:"CosmosDb",typeProperties:{connection:$c,database:$d}},target:{type:"MountedRelationalDatabase",typeProperties:{defaultSchema:"dbo",format:"Delta",retentionInDays:1,enableDeltaChangeDataFeed:false}}}}' | base64 -w 0)
 PLATFORM=$(jq -cn --arg n "$NAME" '{"$schema":"https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",metadata:{type:"MirroredDatabase",displayName:$n},config:{version:"2.0",logicalId:"00000000-0000-0000-0000-000000000000"}}' | base64 -w 0)
