@@ -10,15 +10,15 @@ Cosmos privately, plus a trusted-workspace **network ACL bypass**.
 
 > Most steps are done by clicking in the **Azure portal** and the **Fabric portal**. Three
 > Cosmos-account settings (the network ACL bypass capability, the trusted-workspace
-> authorization, and data-plane RBAC) don't have a portal control, so **Step 3** provides the
+> authorization, and data-plane RBAC) don't have a portal control, so **Steps 2–4** provide the
 > bare **Azure CLI** / **Azure PowerShell** commands for them.
 
 > ### ⛔ Known limitation — the mirror can't be finished in the portal
 > The **Mirroring UX cannot use a VNet data gateway connection.** *New mirrored Azure Cosmos DB
 > → New source → Azure Cosmos DB v2* only offers **cloud** connections (Account key / OAuth
-> without a gateway), so the VNet gateway connection created in **Step 7** is **not selectable**
+> without a gateway), so the VNet gateway connection created in **Step 6** is **not selectable**
 > there. As a result, a private-network mirrored database **must be created via the Fabric REST
-> API** (**Step 8**). This is a current product gap in the Fabric Mirroring experience, not a
+> API** (**Step 7**). This is a current product gap in the Fabric Mirroring experience, not a
 > configuration mistake.
 
 ## Why this approach
@@ -38,26 +38,26 @@ Cosmos privately, plus a trusted-workspace **network ACL bypass**.
   capacity**, in the **same Azure region** as the Cosmos account.
 - You are an **Azure subscription owner** (required to configure the trusted workspace) and a
   **Fabric workspace Admin**.
-- Your VNet does **not** yet have a gateway subnet — you'll create it in Step 2.
+- Your VNet does **not** yet have a gateway subnet — you'll create it in Step 1.
+- The **`Microsoft.PowerPlatform`** resource provider is registered on the subscription (see
+  below).
 
 Get your **Fabric workspace ID** now: open the workspace in the Fabric portal and copy the
-GUID from the URL — `.../groups/{workspace-id}/...`. You'll need it in Steps 5 and 6.
+GUID from the URL — `.../groups/{workspace-id}/...`. You'll need it in Steps 4 and 5.
 
----
+> 💡 **Keep one terminal open for the whole walkthrough.** Several steps set shell variables
+> (`$RG`, `$ACCT`, `$WSID`, `$CONN`, …) and later steps reuse them. If you close your PowerShell
+> or Bash/Cloud Shell session you'll have to re-declare them — use the **same** session from
+> here through Step 7.
 
-# Part 1 — Azure portal: prepare the Cosmos account and network
-
-## Step 1 — Register the Microsoft.PowerPlatform resource provider
+### Register the `Microsoft.PowerPlatform` resource provider
 
 Registering this provider lets the Fabric Virtual Network Data Gateway create its link into
 your VNet.
 
-**Portal**
-
-1. In the Azure portal, open your **Subscription**.
-2. Under **Settings**, select **Resource providers**.
-3. Search for **`Microsoft.PowerPlatform`**, select it, and choose **Register** (skip if it
-   already shows **Registered**).
+**Portal:** open your **Subscription → Settings → Resource providers**, search for
+**`Microsoft.PowerPlatform`**, select it, and choose **Register** (skip if it already shows
+**Registered**).
 
 ![Resource providers — Microsoft.PowerPlatform Registered](media/private-link-mirroring/07-register-powerplatform-rp.png)
 
@@ -66,9 +66,7 @@ your VNet.
 ```bash
 SUB="<subscription-id>"
 az account set --subscription "$SUB"
-
 az provider register --namespace Microsoft.PowerPlatform
-
 # Verify (repeat until it prints "Registered" — registration is async)
 az provider show --namespace Microsoft.PowerPlatform --query registrationState -o tsv
 ```
@@ -77,14 +75,16 @@ az provider show --namespace Microsoft.PowerPlatform --query registrationState -
 
 ```powershell
 Set-AzContext -Subscription "<subscription-id>"
-
 Register-AzResourceProvider -ProviderNamespace Microsoft.PowerPlatform
-
 # Verify (repeat until it prints "Registered" — registration is async)
 (Get-AzResourceProvider -ProviderNamespace Microsoft.PowerPlatform).RegistrationState
 ```
 
-## Step 2 — Create the delegated gateway subnet
+---
+
+# Part 1 — Azure portal: prepare the Cosmos account and network
+
+## Step 1 — Create the delegated gateway subnet
 
 A standard private-link Cosmos deployment has only your **web app** and **private endpoint**
 subnets — it does **not** include a gateway subnet. The Fabric VNet Data Gateway needs its own
@@ -109,7 +109,7 @@ Your account is reachable through an approved **private endpoint** (public acces
    |---|---|---|
    | **Name** | `snet-fabric` | Any name; dedicated to the gateway |
    | **Size / address range** | `/27` (32 IPs) | **Minimum `/27`** — smaller is rejected. Must not overlap other subnets |
-   | **Enable private subnet (no default outbound access)** | **Unchecked** | Leave this **unchecked** so the subnet keeps default outbound access to Azure AD — required for the Step 7 OAuth sign-in |
+   | **Enable private subnet (no default outbound access)** | **Unchecked** | Leave this **unchecked** so the subnet keeps default outbound access to Azure AD — required for the Step 6 OAuth sign-in |
    | **Subnet delegation** | `Microsoft.PowerPlatform/vnetaccesslinks` | Required — this is what makes it a gateway subnet |
    | **Private endpoint network policies** | Disabled | Recommended |
 
@@ -117,7 +117,7 @@ Your account is reachable through an approved **private endpoint** (public acces
 
    > **Leave "Enable private subnet (no default outbound access)" *unchecked*** (as shown
    > above). This keeps default outbound access so the gateway can reach Azure AD for the
-   > Step 7 OAuth sign-in. See the outbound note below.
+   > Step 6 OAuth sign-in. See the outbound note below.
 
    Under **Subnet Delegation → Delegate subnet to a service**, choose
    `Microsoft.PowerPlatform/vnetaccesslinks` (note the private-subnet box remains unchecked):
@@ -132,37 +132,11 @@ endpoint, or a peered VNet with routing) and resolve the Cosmos private DNS
 (`privatelink.documents.azure.com`); avoid overlapping `10.0.1.x`.
 
 > **Why leave it unchecked?** The VNet data gateway must reach **Azure AD
-> (`login.microsoftonline.com`)** to complete the OAuth sign-in in **Step 7**. Leaving
+> (`login.microsoftonline.com`)** to complete the OAuth sign-in in **Step 6**. Leaving
 > **"Enable private subnet (no default outbound access)"** unchecked keeps the default outbound
 > access the gateway needs.
 
-> ### 🔧 Troubleshooting — "invalid token" when creating the connection (Step 7)
-> If Step 7 fails with *"OAuth login through the data gateway was unsuccessful … The service
-> returned an invalid token,"* the gateway subnet has **no outbound path to Azure AD** — usually
-> because **"Enable private subnet (no default outbound access)"** was left **checked**. Attach a
-> **NAT gateway** to the subnet to fix it (this also becomes required after **March 31, 2026**,
-> when default outbound access is retired). Use the portal (**Virtual network → Subnets →
-> snet-fabric → NAT gateway**), or:
->
-> **Azure CLI:**
-> ```bash
-> RG="rg-<env>"; VNET="vnet-<env>"; LOC="<region>"
-> az network public-ip create -g "$RG" -n pip-nat-fabric --sku Standard --allocation-method Static -l "$LOC"
-> az network nat gateway create  -g "$RG" -n nat-fabric --public-ip-addresses pip-nat-fabric -l "$LOC"
-> az network vnet subnet update   -g "$RG" --vnet-name "$VNET" -n snet-fabric --nat-gateway nat-fabric
-> ```
->
-> **Azure PowerShell:**
-> ```powershell
-> $RG = "rg-<env>"; $VNET = "vnet-<env>"; $LOC = "<region>"
-> $pip = New-AzPublicIpAddress -ResourceGroupName $RG -Name pip-nat-fabric -Location $LOC -Sku Standard -AllocationMethod Static
-> $nat = New-AzNatGateway -ResourceGroupName $RG -Name nat-fabric -Location $LOC -Sku Standard -PublicIpAddress $pip
-> $vnetObj = Get-AzVirtualNetwork -ResourceGroupName $RG -Name $VNET
-> ($vnetObj.Subnets | Where-Object Name -eq 'snet-fabric').NatGateway = $nat
-> $vnetObj | Set-AzVirtualNetwork
-> ```
-
-## Step 3 — Grant Cosmos data-plane RBAC
+## Step 2 — Grant Cosmos data-plane RBAC
 
 Grant the identity that will create the Fabric connection (typically you) the metadata and
 analytics read actions Fabric mirroring needs, plus **Built-in Data Contributor**. Cosmos
@@ -212,7 +186,7 @@ New-AzCosmosDBSqlRoleAssignment -AccountName $ACCT -ResourceGroupName $RG -Scope
   -PrincipalId $ME -RoleDefinitionName "Cosmos DB Built-in Data Contributor"
 ```
 
-## Step 4 — Add the `EnableFabricNetworkAclBypass` capability
+## Step 3 — Add the `EnableFabricNetworkAclBypass` capability
 
 This capability on the Cosmos account lets an authorized Fabric workspace bypass the account's
 network ACLs. There's no portal control for it — add it with the CLI or PowerShell.
@@ -249,7 +223,7 @@ if ($c.Properties.capabilities.name -notcontains "EnableFabricNetworkAclBypass")
   -ResourceType "Microsoft.DocumentDB/databaseAccounts").Properties.capabilities.name
 ```
 
-## Step 5 — Authorize the trusted Fabric workspace
+## Step 4 — Authorize the trusted Fabric workspace
 
 Authorize your Fabric workspace ID as a trusted resource so it can reach the account through
 the network ACL bypass. No portal control — use the CLI or PowerShell.
@@ -279,31 +253,31 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
   -NetworkAclBypassResourceId "/tenants/$TENANT/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/Fabric/providers/Microsoft.Fabric/workspaces/$WSID"
 ```
 
-> Azure also surfaces Steps 3–5 in the Cosmos account's **Mirroring in Fabric** blade
+> Azure also surfaces Steps 2–4 in the Cosmos account's **Mirroring in Fabric** blade
 > (**Apply RBAC policies** / **Configure private networks**) — as the same commands.
 
 ---
 
 # Part 2 — Fabric portal: gateway, connection, and mirror
 
-## Step 6 — Create the VNet Data Gateway
+## Step 5 — Create the VNet Data Gateway
 
 1. In the **Fabric portal**, select the **gear (Settings)** → **Manage connections and
    gateways**.
 2. Open the **Virtual network data gateways** tab → **+ New**.
 3. Provide: **License capacity** (your active Fabric capacity), **Azure subscription**,
    **Resource group**, **Virtual network** (`vnet-<env>`), **Subnet** (`snet-fabric` from
-   Step 2), a **Name**, and (under **Advanced options**) an inactivity timeout.
+   Step 1), a **Name**, and (under **Advanced options**) an inactivity timeout.
 
    ![Fabric — New virtual network data gateway dialog](media/private-link-mirroring/09-fabric-new-vnet-data-gateway.png)
 
 4. Select **Save**. Fabric provisions the gateway inside your VNet, in the same region.
 
-## Step 7 — Create the Azure Cosmos DB v2 connection (OAuth)
+## Step 6 — Create the Azure Cosmos DB v2 connection (OAuth)
 
 1. Still under **Manage connections and gateways**, open **Connections → + New**.
 2. For the connectivity type, select **Virtual network**.
-3. **Gateway cluster name:** select the VNet Data Gateway created in Step 6
+3. **Gateway cluster name:** select the VNet Data Gateway created in Step 5
    (for example, `vnet-<env>-snet-fabric`).
 4. **Connection name:** a name (for example, `mjb-cosmos-private-link`).
 5. **Connection type:** `Azure Cosmos DB v2`.
@@ -320,53 +294,66 @@ Update-AzCosmosDBAccount -ResourceGroupName $RG -Name $ACCT -NetworkAclBypass Az
 > **Gateway cluster name** is what routes the connection through your VNet data gateway to the
 > private endpoint.
 
-## Step 8 — Create the mirrored database (Fabric REST API)
+> ⚠️ **Got "OAuth login through the data gateway was unsuccessful … invalid token"?** The
+> gateway subnet is missing outbound access to Azure AD — see
+> [Troubleshooting: gateway OAuth "invalid token"](#troubleshooting-gateway-oauth-invalid-token)
+> at the end of this guide.
+
+## Step 7 — Create the mirrored database (Fabric REST API)
 
 > The **Mirroring UX cannot use a VNet data gateway connection.** Its **New mirrored Azure
 > Cosmos DB → New source → Azure Cosmos DB v2** flow only creates/lists **cloud** connections
 > (note the *Account key* authentication and that your gateway connection is absent from the
 > **Connection** dropdown). For private-network mirroring you must create the mirrored database
-> with the **Fabric REST API**, referencing the connection from Step 7 — this is the one step
+> with the **Fabric REST API**, referencing the connection from Step 6 — this is the one step
 > that can't be done in the portal.
 
-Use the repo helper (it registers the RP if needed, reuses the gateway, and creates + starts
-the mirror against an existing connection):
+Create the mirror with the minimal helper script (it just creates + starts the mirror in the
+workspace you name). **Azure PowerShell:**
 
 ```powershell
-./tools/setup-mirroring-private-link.ps1 `
-  -SubscriptionId <sub> -ResourceGroup rg-<env> -CosmosAccountName cosmos-<env> `
-  -VNetName vnet-<env> -FabricWorkspaceId <fabric-workspace-id> `
-  -CosmosDatabaseName CosmosMirrorDatabase -MirrorName <env>-mirror `
-  -ConnectionId <connection-id-from-Step-7>
+Connect-AzAccount   # if not already signed in
+./tools/create-mirror-rest.ps1 `
+  -WorkspaceId $WSID -ConnectionId $CONN `
+  -Database CosmosMirrorDatabase -MirrorName <env>-mirror
 ```
 
-Or call the REST API directly (PowerShell):
+**Azure CLI / Bash (Cloud Shell):**
 
-```powershell
-$WS = "<fabric-workspace-id>"; $CONN = "<connection-id-from-Step-7>"
-$DB = "CosmosMirrorDatabase";  $NAME = "<env>-mirror"
-$tok = Get-AzAccessToken -ResourceUrl 'https://api.fabric.microsoft.com'
-$plain = if ($tok.Token -is [System.Security.SecureString]) { [System.Net.NetworkCredential]::new('', $tok.Token).Password } else { $tok.Token }
-$h = @{ Authorization = "Bearer $plain"; 'Content-Type' = 'application/json' }
-function B64($o){ [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Depth 20))) }
-
-$mirroring = @{ properties = @{
-  source = @{ type = 'CosmosDb'; typeProperties = @{ connection = $CONN; database = $DB } }
-  target = @{ type = 'MountedRelationalDatabase'; typeProperties = @{ defaultSchema = 'dbo'; format = 'Delta'; retentionInDays = 1; enableDeltaChangeDataFeed = $false } } } }
-$platform = @{ '$schema' = 'https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json'
-  metadata = @{ type = 'MirroredDatabase'; displayName = $NAME }; config = @{ version = '2.0'; logicalId = '00000000-0000-0000-0000-000000000000' } }
-$body = @{ displayName = $NAME; definition = @{ parts = @(
-  @{ path = 'mirroring.json'; payload = (B64 $mirroring); payloadType = 'InlineBase64' }
-  @{ path = '.platform';      payload = (B64 $platform);  payloadType = 'InlineBase64' }) } }
-
-$mirror = Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WS/mirroredDatabases" -Headers $h -Body ($body | ConvertTo-Json -Depth 20)
-Invoke-RestMethod -Method Post -Uri "https://api.fabric.microsoft.com/v1/workspaces/$WS/mirroredDatabases/$($mirror.id)/startMirroring" -Headers $h
+```bash
+az login   # if not already signed in
+./tools/create-mirror-rest.sh "$WSID" "$CONN" CosmosMirrorDatabase <env>-mirror
 ```
 
-The [`AzureCosmosDB/fabric-cosmos-mirror`](https://github.com/AzureCosmosDB/fabric-cosmos-mirror)
+- `$WSID` — your **Fabric workspace ID** (from Prerequisites).
+- `$CONN` — the **connection ID** (a **GUID**, not the display name). Fabric's portal doesn't
+  surface it, so look it up by the connection name you gave it in **Step 6**:
+
+  **PowerShell**
+  ```powershell
+  $name  = "<connection name from Step 6>"
+  $tok   = Get-AzAccessToken -ResourceUrl 'https://api.fabric.microsoft.com'
+  $plain = if ($tok.Token -is [securestring]) { [System.Net.NetworkCredential]::new('', $tok.Token).Password } else { $tok.Token }
+  $CONN  = ((Invoke-RestMethod -Uri 'https://api.fabric.microsoft.com/v1/connections' -Headers @{ Authorization = "Bearer $plain" }).value |
+            Where-Object displayName -eq $name).id
+  $CONN
+  ```
+
+  **Azure CLI**
+  ```bash
+  NAME="<connection name from Step 6>"
+  CONN=$(az rest --resource https://api.fabric.microsoft.com \
+    --url https://api.fabric.microsoft.com/v1/connections \
+    --query "value[?displayName=='$NAME'].id | [0]" -o tsv)
+  echo "$CONN"
+  ```
+
+Both scripts POST the mirrored database definition (a `CosmosDb` source referencing the
+connection) and then call `startMirroring`. The
+[`AzureCosmosDB/fabric-cosmos-mirror`](https://github.com/AzureCosmosDB/fabric-cosmos-mirror)
 Python sample does the same thing.
 
-## Step 9 — Verify
+## Step 8 — Verify
 
 In the mirrored database, open **Monitor replication**. The status should reach *Running* and
 row counts should climb — all while Cosmos public access stays **Disabled**, proving Fabric is
@@ -381,7 +368,7 @@ reaching the account through the trusted-workspace bypass over the private gatew
 2. **Azure portal:** delete the **`snet-fabric`** subnet (Virtual network → Subnets). If it
    reports *in use by PowerPlatformSAL*, wait — Power Platform releases the delegation link
    **asynchronously** after the gateway is deleted (can take up to ~1 hour), then retry.
-3. **CLI** (to undo the Steps 4–5 settings):
+3. **CLI** (to undo the Steps 3–4 settings):
 
    ```bash
    az cosmosdb update -g "$RG" -n "$ACCT" --network-acl-bypass None
@@ -404,3 +391,42 @@ reaching the account through the trusted-workspace bypass over the private gatew
 > Prefer infrastructure-as-code instead of the manual flow? The repo's `infra/` Bicep and
 > `tools/*.ps1` scripts automate Parts 1 and 2 (except the interactive OAuth connection). They
 > are entirely optional and not required for this walkthrough.
+
+---
+
+## Troubleshooting: gateway OAuth "invalid token"
+
+If **Step 6** (creating the Azure Cosmos DB v2 connection) fails with:
+
+> *OAuth login through the data gateway was unsuccessful … The service returned an invalid
+> token.*
+
+…the gateway subnet has **no outbound path to Azure AD** (`login.microsoftonline.com`), so the
+gateway can't complete the OAuth token exchange. This usually happens when **"Enable private
+subnet (no default outbound access)"** was left **checked** on the subnet in **Step 1**.
+
+Fix it by giving the subnet outbound internet — attach a **NAT gateway** (this also becomes
+required after **March 31, 2026**, when default outbound access is retired). In the portal:
+**Virtual network → Subnets → snet-fabric → NAT gateway**. Or:
+
+**Azure CLI**
+
+```bash
+RG="rg-<env>"; VNET="vnet-<env>"; LOC="<region>"
+az network public-ip create -g "$RG" -n pip-nat-fabric --sku Standard --allocation-method Static -l "$LOC"
+az network nat gateway create  -g "$RG" -n nat-fabric --public-ip-addresses pip-nat-fabric -l "$LOC"
+az network vnet subnet update   -g "$RG" --vnet-name "$VNET" -n snet-fabric --nat-gateway nat-fabric
+```
+
+**Azure PowerShell**
+
+```powershell
+$RG = "rg-<env>"; $VNET = "vnet-<env>"; $LOC = "<region>"
+$pip = New-AzPublicIpAddress -ResourceGroupName $RG -Name pip-nat-fabric -Location $LOC -Sku Standard -AllocationMethod Static
+$nat = New-AzNatGateway -ResourceGroupName $RG -Name nat-fabric -Location $LOC -Sku Standard -PublicIpAddress $pip
+$vnetObj = Get-AzVirtualNetwork -ResourceGroupName $RG -Name $VNET
+($vnetObj.Subnets | Where-Object Name -eq 'snet-fabric').NatGateway = $nat
+$vnetObj | Set-AzVirtualNetwork
+```
+
+After attaching the NAT gateway, **retry Step 6**.
