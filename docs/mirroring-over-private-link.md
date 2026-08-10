@@ -405,11 +405,20 @@ Python sample does the same thing.
 
 
 
-## Step 8 — Verify
+## Step 8 — Verify replication
 
-In the mirrored database, open **Monitor replication**. The status should reach *Running* and
-row counts should climb — all while Cosmos public access stays **Disabled**, proving Fabric is
-reaching the account through the trusted-workspace bypass over the private gateway.
+1. In your Fabric workspace, open the new **mirrored database** (its name is `$MIRROR_NAME`).
+2. Confirm the **Details** card shows your **Source connection** GUID and **Source database** —
+   these are blank if the item was created without a definition (see Step 7).
+3. Under **Monitor replication**, confirm **Status** is **Running**.
+4. Click **Refresh** about once a minute and watch the **Rows replicated** column climb for each
+   table until it matches your source containers. Initial replication can take a few minutes to
+   begin depending on data volume.
+
+![Fabric — Monitor replication showing Status Running and Rows replicated climbing](media/private-link-mirroring/11-fabric-monitor-replication.png)
+
+Because Cosmos public network access stays **Disabled** throughout, seeing rows replicate proves
+Fabric is reaching the account through the trusted-workspace bypass over the private gateway.
 
 ---
 
