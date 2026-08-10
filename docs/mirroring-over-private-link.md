@@ -29,6 +29,33 @@ Cosmos privately, plus a trusted-workspace **network ACL bypass**.
 | Ongoing firewall maintenance | Yes — service IP ranges change over time | **None** |
 | Public access during setup | Briefly re-enabled | Stays **Disabled** the whole time |
 
+### Networking options: Private Endpoint vs. VNet service endpoints
+
+This approach removes the DataFactory / PowerQueryOnline **IP allowlists** entirely, because
+two other mechanisms cover what Fabric needs:
+
+- **Control plane** (metadata reads during setup) — handled by the trusted-workspace **Network
+  ACL bypass** (Steps 2–4), not by allowlisting DataFactory IPs.
+- **Data plane** (replication) — handled by the **VNet Data Gateway** running inside your VNet
+  (Steps 5–7), not by allowlisting PowerQueryOnline IPs.
+
+Because of this, you do **not** need Fabric's service-tag IP ranges regardless of how Cosmos
+private access is configured. Only the way the **gateway subnet** reaches Cosmos differs:
+
+| Cosmos network config | Public access | How the gateway subnet is permitted |
+|---|---|---|
+| **Private Endpoint** (this guide — validated) | **Disabled** | The gateway subnet resolves to the private endpoint via private DNS. |
+| **VNet service endpoints** (VNet rules) | Enabled + *Selected networks* | Enable the `Microsoft.AzureCosmosDB` service endpoint on the **gateway's delegated subnet** and add that subnet as a **VNet rule** on the account. |
+
+In both cases you are allowlisting **your own subnet / private endpoint**, never Fabric's
+service-tag ranges. Steps 2–8 are otherwise identical — only Cosmos-side private connectivity
+changes.
+
+> **Note:** This guide is written and validated for the **Private Endpoint + public access
+> Disabled** configuration. The VNet service-endpoint variant uses the same mechanism (swap the
+> private endpoint for a VNet rule on the gateway subnet) but has not been separately validated
+> end-to-end.
+
 ## Prerequisites
 
 - An Azure Cosmos DB for NoSQL account with **continuous backup** (7 or 30 day), **Entra ID
